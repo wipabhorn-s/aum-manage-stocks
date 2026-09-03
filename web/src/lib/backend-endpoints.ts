@@ -22,6 +22,10 @@ export const backendEndpointRules = [
   { methods: ["POST"] as const, pattern: /^payments\/subscription-intent$/ },
   { methods: ["POST"] as const, pattern: /^payments\/[^/]+\/retry-intent$/ },
   { methods: ["POST"] as const, pattern: /^payments\/[^/]+\/confirm$/ },
+  // ปุ่ม "ยกเลิก" ในประวัติการชำระเงินเรียกตัวนี้ ตกหล่นจากรายการมาตั้งแต่แรก
+  // ผู้ใช้จึงกดยกเลิกแล้วได้ 404 "ไม่อนุญาตให้เรียก endpoint นี้ผ่านเว็บ" และ
+  // ติดอยู่กับใบค้าง 24 ชม. โดยเปิดรายการใหม่ไม่ได้เลย
+  { methods: ["POST"] as const, pattern: /^payments\/[^/]+\/cancel$/ },
   { methods: ["GET"] as const, pattern: /^(?:subscription-plans|subscriptions\/me)$/ },
   { methods: ["GET", "POST", "PATCH", "DELETE"] as const, pattern: /^shops(?:\/[^/]+(?:\/(?:pause|resume))?)?$/ },
   { methods: ["GET", "POST", "PATCH", "PUT", "DELETE"] as const, pattern: /^shops\/[^/]+\/(?:staff(?:\/[^/]+\/permissions)?|products(?:\/[^/]+)?|stock(?:\/adjust|\/transfer|\/recent|\/movements|\/chat-command(?:\/[^/]+(?:\/confirm)?)?)?|sales(?:\/scan|\/[^/]+(?:\/void)?)?|chat\/messages|ai\/recommendations(?:\/generate)?|dashboard(?:\/best-sellers|\/dead-stock|\/reports\/(?:sales-trend|by-category))?)$/ },

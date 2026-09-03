@@ -67,3 +67,85 @@ describe('DeterministicStockCommandParser', () => {
     });
   });
 });
+
+/**
+ * [อั้ม] เส้นแบ่งที่แพงที่สุดในระบบ — สามคำนี้หน้าตาคล้ายกันแต่ผลลัพธ์คนละโลก
+ *
+ *   ลด  → ของหายไปเฉย ๆ ไม่มีเงินเกี่ยวข้อง (ของเสีย นับสต็อกใหม่)
+ *   ขาย → ตัดสต็อก + ออกบิล + มีรายได้
+ *   ย้าย → ของไม่ได้หายไปไหน แค่ไปอยู่อีกร้าน
+ *
+ * จับสลับกันเมื่อไหร่ = ตัดของเสียแล้วได้รายได้ผี หรือขายแล้วรายได้หาย
+ */
+describe('แยก ลด / ขาย / ย้าย ออกจากกัน', () => {
+  const parser = new DeterministicStockCommandParser();
+
+  it('"ลด" ต้องเป็นการปรับสต็อกเสมอ ห้ามกลายเป็นการขาย', async () => {
+    await expect(parser.parse('ลดโค้ก 5')).resolves.toEqual({
+      intent: 'ADJUST_STOCK',
+      operation: 'DECREASE',
+      productQuery: 'โค้ก',
+      quantity: 5,
+    });
+    await expect(parser.parse('เอาออก น้ำแร่ 3 ขวด')).resolves.toMatchObject({
+      intent: 'ADJUST_STOCK',
+      operation: 'DECREASE',
+    });
+  });
+
+  describe('ขาย', () => {
+    it.each([
+      ['ขายโค้ก 2', 'โค้ก', 2],
+      ['ขาย โค้ก 2 ขวด', 'โค้ก', 2],
+      ['ขายน้ำแร่ 12 ขวด', 'น้ำแร่', 12],
+    ])('%s', async (message, productQuery, quantity) => {
+      await expect(parser.parse(message)).resolves.toEqual({
+        intent: 'SELL',
+        productQuery,
+        quantity,
+      });
+    });
+  });
+
+  describe('ย้ายไปร้านอื่น', () => {
+    it.each([
+      ['ย้ายโค้ก 10 ไปร้าน the aum', 'โค้ก', 10, 'the aum'],
+      ['ย้ายโค้ก 10 ขวด ไปร้าน the aum', 'โค้ก', 10, 'the aum'],
+      ['โอนน้ำแร่ 5 ไป the aum', 'น้ำแร่', 5, 'the aum'],
+      ['ย้ายโค้ก 3 ไปที่ร้านทดสอบ', 'โค้ก', 3, 'ทดสอบ'],
+    ])('%s', async (message, productQuery, quantity, destinationShopQuery) => {
+      await expect(parser.parse(message)).resolves.toEqual({
+        intent: 'TRANSFER_STOCK',
+        productQuery,
+        quantity,
+        destinationShopQuery,
+      });
+    });
+
+    it('ไม่ระบุร้านปลายทาง — ยังเป็นคำสั่งย้าย แล้วค่อยไปถามทีหลัง', async () => {
+      await expect(parser.parse('ย้ายโค้ก 10')).resolves.toEqual({
+        intent: 'TRANSFER_STOCK',
+        productQuery: 'โค้ก',
+        quantity: 10,
+      });
+      await expect(parser.parse('ย้ายน้ำแร่ 5 ขวด')).resolves.toEqual({
+        intent: 'TRANSFER_STOCK',
+        productQuery: 'น้ำแร่',
+        quantity: 5,
+      });
+    });
+
+    /**
+     * รูปแบบมีปลายทางต้องถูกลองก่อนเสมอ ถ้าลำดับสลับ รูปแบบสั้นจะกลืน
+     * "ไปร้าน the aum" เข้าไปเป็นชื่อสินค้า แล้วหาสินค้าไม่เจอ
+     */
+    it('ระบุปลายทาง ต้องไม่ถูกรูปแบบสั้นกลืนไปเป็นชื่อสินค้า', async () => {
+      await expect(
+        parser.parse('ย้ายโค้ก 10 ไปร้าน the aum'),
+      ).resolves.toMatchObject({
+        productQuery: 'โค้ก',
+        destinationShopQuery: 'the aum',
+      });
+    });
+  });
+});

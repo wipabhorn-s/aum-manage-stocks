@@ -120,7 +120,13 @@ export class StockChoiceService {
     const parsed = await this.parser.parse(input.message);
 
     // คำถามยอดคงเหลือไม่ต้องเลือกอะไร — ตอบไปเลยทุกตัวที่ตรง (StockQueryService)
-    if (parsed.intent !== 'ADJUST_STOCK') return null;
+    if (parsed.intent === 'QUERY_STOCK') return null;
+
+    /**
+     * คำสั่งย้ายก็เข้าเส้นทางนี้ได้ — เดิมถูกกันไว้เพราะแถวที่สร้างยังไม่มีร้าน
+     * ปลายทางแล้วไปพังตอนยืนยัน ตอนนี้ "รอเลือกร้านปลายทาง" เป็นสถานะที่ระบบ
+     * รู้จักแล้ว ผู้ใช้จึงเลือกสินค้าก่อน แล้วค่อยเลือกร้านปลายทางต่อได้
+     */
 
     const { candidates, totalMatches } = await this.findCandidates(
       input.shopId,
@@ -140,7 +146,9 @@ export class StockChoiceService {
         intent: parsed.intent,
         shopProductId: null,
         productQuery: parsed.productQuery,
-        operation: parsed.operation,
+        // ขายไม่มี operation มาจาก parser แต่ทำให้ของลดลงจริง
+        operation:
+          parsed.intent === 'ADJUST_STOCK' ? parsed.operation : 'DECREASE',
         quantity: parsed.quantity,
         expiresAt: new Date(Date.now() + ttl * 60_000),
         payload: { ...parsed, candidates, totalMatches },

@@ -3,6 +3,8 @@ import { PrismaService } from '../database/prisma.service';
 import type { StockAuthorizationPort } from './ports/stock-authorization.port';
 import type { StockInventoryPort } from './ports/stock-inventory.port';
 import { LowStockNotifier } from '../notifications/low-stock.notifier';
+import { Prisma } from '../database/generated/prisma/client';
+import { StockLotsService } from './stock-lots.service';
 import { StockService } from './stock.service';
 
 describe('StockService', () => {
@@ -33,12 +35,23 @@ describe('StockService', () => {
     const lowStock = {
       notifyIfCrossed: jest.fn().mockResolvedValue(undefined),
     } as unknown as LowStockNotifier;
+    const lots = {
+      receive: jest.fn().mockResolvedValue({ unitCost: new Prisma.Decimal(0) }),
+      consume: jest.fn().mockResolvedValue({
+        unitCost: new Prisma.Decimal(0),
+        totalCost: new Prisma.Decimal(0),
+        picked: [],
+        quantityWithoutLot: 0,
+      }),
+      ensureOpeningLot: jest.fn().mockResolvedValue(undefined),
+    } as unknown as StockLotsService;
     const service = new StockService(
       prisma,
       movements,
       inventory,
       authorization,
       lowStock,
+      lots,
     );
 
     await expect(
@@ -95,12 +108,23 @@ describe('StockService', () => {
     const lowStock = {
       notifyIfCrossed: jest.fn().mockResolvedValue(undefined),
     } as unknown as LowStockNotifier;
+    const lots = {
+      receive: jest.fn().mockResolvedValue({ unitCost: new Prisma.Decimal(0) }),
+      consume: jest.fn().mockResolvedValue({
+        unitCost: new Prisma.Decimal(0),
+        totalCost: new Prisma.Decimal(0),
+        picked: [],
+        quantityWithoutLot: 0,
+      }),
+      ensureOpeningLot: jest.fn().mockResolvedValue(undefined),
+    } as unknown as StockLotsService;
     const service = new StockService(
       prisma,
       movements,
       inventory,
       authorization,
       lowStock,
+      lots,
     );
 
     await expect(
@@ -144,12 +168,23 @@ describe('StockService', () => {
     const lowStock = {
       notifyIfCrossed: jest.fn().mockResolvedValue(undefined),
     } as unknown as LowStockNotifier;
+    const lots = {
+      receive: jest.fn().mockResolvedValue({ unitCost: new Prisma.Decimal(0) }),
+      consume: jest.fn().mockResolvedValue({
+        unitCost: new Prisma.Decimal(0),
+        totalCost: new Prisma.Decimal(0),
+        picked: [],
+        quantityWithoutLot: 0,
+      }),
+      ensureOpeningLot: jest.fn().mockResolvedValue(undefined),
+    } as unknown as StockLotsService;
     const service = new StockService(
       prisma,
       movements,
       inventory,
       authorization,
       lowStock,
+      lots,
     );
 
     await service.adjustInTransaction(tx as never, {
@@ -222,12 +257,23 @@ describe('StockService.transfer', () => {
       notifyIfCrossed: notifyMock,
     } as unknown as LowStockNotifier;
 
+    const lots = {
+      receive: jest.fn().mockResolvedValue({ unitCost: new Prisma.Decimal(0) }),
+      consume: jest.fn().mockResolvedValue({
+        unitCost: new Prisma.Decimal(0),
+        totalCost: new Prisma.Decimal(0),
+        picked: [],
+        quantityWithoutLot: 0,
+      }),
+      ensureOpeningLot: jest.fn().mockResolvedValue(undefined),
+    } as unknown as StockLotsService;
     const service = new StockService(
       prisma,
       movements,
       inventory,
       authorization,
       lowStock,
+      lots,
     );
     return {
       service,
@@ -364,5 +410,95 @@ describe('StockService.transfer', () => {
       }),
     ).rejects.toThrow();
     expect(adjustMock).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * ทุนต้องถูกบันทึกลง stock_movements ทุกทางที่สต็อกขยับ ไม่ใช่แค่ตอนขาย
+ *
+ * เหตุผลเดียวกับที่รวม logic ล็อตไว้ที่ service เดียว — ถ้าบันทึกทุนแค่บางทาง
+ * หน้าประวัติจะมีบางแถวเป็น "—" โดยไม่มีใครอธิบายได้ว่าทำไม
+ */
+describe('StockService — ทุนต่อชิ้นในประวัติการเคลื่อนไหว', () => {
+  function setup(lotUnitCost: string) {
+    const tx = {};
+    const prisma = {
+      $transaction: jest.fn((callback: (value: unknown) => unknown) =>
+        callback(tx),
+      ),
+    } as unknown as PrismaService;
+    const authorization = {
+      assertCanAdjustStock: jest.fn().mockResolvedValue(undefined),
+      assertCanUseChatbot: jest.fn().mockResolvedValue(undefined),
+    } as unknown as StockAuthorizationPort;
+    const inventory = {
+      adjustStock: jest
+        .fn()
+        .mockResolvedValue({ quantityBefore: 10, quantityAfter: 15 }),
+    } as unknown as StockInventoryPort;
+    const createMovementMock = jest
+      .fn()
+      .mockResolvedValue({ id: 'movement-id' });
+    const movements = {
+      create: createMovementMock,
+    } as unknown as StockMovementsService;
+    const lowStock = {
+      notifyIfCrossed: jest.fn().mockResolvedValue(undefined),
+    } as unknown as LowStockNotifier;
+    const lots = {
+      receive: jest
+        .fn()
+        .mockResolvedValue({ unitCost: new Prisma.Decimal(lotUnitCost) }),
+      consume: jest.fn().mockResolvedValue({
+        unitCost: new Prisma.Decimal(lotUnitCost),
+        totalCost: new Prisma.Decimal(lotUnitCost),
+        picked: [],
+        quantityWithoutLot: 0,
+      }),
+      ensureOpeningLot: jest.fn().mockResolvedValue(undefined),
+    } as unknown as StockLotsService;
+    const service = new StockService(
+      prisma,
+      movements,
+      inventory,
+      authorization,
+      lowStock,
+      lots,
+    );
+    return { service, createMovementMock };
+  }
+
+  const base = {
+    shopId: 'shop-id',
+    shopProductId: 'product-id',
+    actorId: 'actor-id',
+    source: 'WEB' as const,
+  };
+
+  it('ของเข้าบันทึกทุนของล็อตที่เพิ่งเปิด', async () => {
+    const { service, createMovementMock } = setup('14.00');
+
+    await service.adjust({
+      ...base,
+      operation: 'INCREASE',
+      quantity: 20,
+      unitCost: 14,
+    });
+
+    expect(createMovementMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ unitCost: new Prisma.Decimal('14.00') }),
+    );
+  });
+
+  it('ของออกบันทึกทุนเฉลี่ยของล็อตที่ถูกตัดจริง ไม่ใช่ทุนปัจจุบันของสินค้า', async () => {
+    const { service, createMovementMock } = setup('12.67');
+
+    await service.adjust({ ...base, operation: 'DECREASE', quantity: 15 });
+
+    expect(createMovementMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ unitCost: new Prisma.Decimal('12.67') }),
+    );
   });
 });

@@ -50,6 +50,10 @@ describe('AuthService', () => {
   let google: { exchangeCodeForProfile: jest.Mock };
   let challenge: { sign: jest.Mock; verify: jest.Mock };
   let recovery: Record<string, jest.Mock>;
+  let mail: {
+    sendPasswordResetEmail: jest.Mock;
+    sendEmailVerification: jest.Mock;
+  };
   let service: AuthService;
 
   beforeEach(() => {
@@ -62,6 +66,8 @@ describe('AuthService', () => {
       findByLineId: jest.fn(),
       createLineUser: jest.fn(),
       findByGoogleId: jest.fn(),
+      findOwnerByEmail: jest.fn(),
+      linkGoogleAccount: jest.fn(),
       createGoogleUser: jest.fn(),
       markLoggedIn: jest.fn(),
       sanitize: jest.fn((user: User) => ({ id: user.id })),
@@ -92,6 +98,11 @@ describe('AuthService', () => {
       revokeAllForUser: jest.fn(),
     };
 
+    mail = {
+      sendPasswordResetEmail: jest.fn(),
+      sendEmailVerification: jest.fn(),
+    };
+
     service = new AuthService(
       users as never,
       bcrypt as never,
@@ -100,10 +111,7 @@ describe('AuthService', () => {
       line as never,
       google as never,
       { issue: jest.fn(), findValid: jest.fn(), markUsed: jest.fn() } as never,
-      {
-        sendPasswordResetEmail: jest.fn(),
-        sendEmailVerification: jest.fn(),
-      } as never,
+      mail as never,
       {
         encrypt: jest.fn((v: string) => v),
         decrypt: jest.fn((v: string) => v),
@@ -113,6 +121,41 @@ describe('AuthService', () => {
       { issue: jest.fn(), findValid: jest.fn(), markUsed: jest.fn() } as never,
       { get: jest.fn(() => 'https://app.example.com') } as never,
     );
+  });
+
+  describe('register', () => {
+    it('บอกว่าส่งเมลสำเร็จเมื่อส่งผ่าน', async () => {
+      users.createUser.mockResolvedValue(makeUser());
+
+      await expect(
+        service.register({
+          firstName: 'พร',
+          lastName: 'ทดสอบ',
+          email: 'praew@example.com',
+          password: 'secret',
+        }),
+      ).resolves.toEqual({ emailSent: true });
+    });
+
+    // เดิมกลืน error เงียบสนิท ผู้ใช้เห็นว่า "ส่งลิงก์แล้ว" ทั้งที่ไม่มีเมลออกไปเลย
+    // แล้วนั่งรอจนเข้าใจว่าสมัครไม่ผ่าน — บัญชีสร้างสำเร็จ จึงห้ามโยน error ทิ้ง
+    // แต่ต้องรายงานกลับไปว่าส่งไม่ออก
+    it('บัญชียังถูกสร้าง แต่รายงานว่าส่งเมลไม่ออก เมื่อผู้ให้บริการเมลล้ม', async () => {
+      users.createUser.mockResolvedValue(makeUser());
+      mail.sendEmailVerification.mockRejectedValue(
+        new Error('Brevo ตอบกลับ 401'),
+      );
+
+      await expect(
+        service.register({
+          firstName: 'พร',
+          lastName: 'ทดสอบ',
+          email: 'praew@example.com',
+          password: 'secret',
+        }),
+      ).resolves.toEqual({ emailSent: false });
+      expect(users.createUser).toHaveBeenCalled();
+    });
   });
 
   describe('login ด้วยอีเมล/username', () => {
@@ -244,6 +287,60 @@ describe('AuthService', () => {
       service.verifyTwoFactorLogin('challenge', '123456'),
     ).resolves.toEqual(expect.objectContaining({ accessToken: 'access' }));
     expect(users.markLoggedIn).toHaveBeenCalledWith(USER_ID);
+  });
+
+  /**
+   * Google ส่งอีเมลกลับมาเฉพาะเมื่อ email_verified = true การล็อกอินผ่านจึง
+   * พิสูจน์ความเป็นเจ้าของอีเมลนั้นแล้ว — ผูกเข้าบัญชีเดิมได้
+   */
+  describe('ผูก Google เข้ากับบัญชีที่ใช้อีเมลเดียวกัน', () => {
+    beforeEach(() => {
+      google.exchangeCodeForProfile.mockResolvedValue({
+        googleId: 'G1',
+        displayName: 'praew',
+        email: 'praew@example.com',
+      });
+      users.findByGoogleId.mockResolvedValue(null);
+    });
+
+    it('ผูกกับบัญชีเดิมแทนการสร้างบัญชีใหม่ (ไม่งั้นชน unique index ของอีเมล)', async () => {
+      const existing = makeUser({ id: 'u-1', googleId: null });
+      users.findOwnerByEmail.mockResolvedValue(existing);
+      users.linkGoogleAccount.mockResolvedValue(
+        makeUser({ id: 'u-1', googleId: 'G1' }),
+      );
+
+      await service.loginWithGoogle('code');
+
+      expect(users.linkGoogleAccount).toHaveBeenCalledWith('u-1', 'G1');
+      expect(users.createGoogleUser).not.toHaveBeenCalled();
+    });
+
+    it('สร้างบัญชีใหม่เมื่ออีเมลนี้ยังไม่มีเจ้าของ', async () => {
+      users.findOwnerByEmail.mockResolvedValue(null);
+      users.createGoogleUser.mockResolvedValue(makeUser({ googleId: 'G1' }));
+
+      await service.loginWithGoogle('code');
+
+      expect(users.createGoogleUser).toHaveBeenCalled();
+      expect(users.linkGoogleAccount).not.toHaveBeenCalled();
+    });
+
+    // Google ที่ไม่ยืนยันอีเมลจะไม่ส่ง email กลับมา (google-auth.service.ts)
+    // จึงไม่มีอะไรให้จับคู่ ต้องไม่เดาจับกับบัญชีใดๆ
+    it('ไม่ผูกบัญชีเมื่อ Google ไม่ส่งอีเมลกลับมา', async () => {
+      google.exchangeCodeForProfile.mockResolvedValue({
+        googleId: 'G1',
+        displayName: 'praew',
+        email: null,
+      });
+      users.createGoogleUser.mockResolvedValue(makeUser({ googleId: 'G1' }));
+
+      await service.loginWithGoogle('code');
+
+      expect(users.findOwnerByEmail).not.toHaveBeenCalled();
+      expect(users.linkGoogleAccount).not.toHaveBeenCalled();
+    });
   });
 
   describe('refresh', () => {

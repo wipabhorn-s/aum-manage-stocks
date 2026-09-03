@@ -28,7 +28,7 @@ function PricingAction({ plan, currentPlan, loggedIn, variant, t }: { plan: Plan
   const downgrade = currentPlan !== "FREE" && (plan === "FREE" || (currentPlan === "PRO" && plan === "PLUS"));
   if (downgrade) return <Button variant="outline" className="mt-5.5 w-full" disabled>{t.downgrade}</Button>;
   if (plan === "FREE") return <Button variant="outline" className="mt-5.5 w-full" render={<Link href="/dashboard" />}>{t.goDashboard}</Button>;
-  return <Button variant={variant} className="mt-5.5 w-full" render={<Link href={`/membership/upgrade?plan=${plan}`} />}>{t.upgrade(plan)}</Button>;
+  return <Button variant={variant} className="mt-5.5 w-full" render={<Link href={`/membership?upgrade=1`} />}>{t.upgrade(plan)}</Button>;
 }
 
 export default function LandingPageContent() {

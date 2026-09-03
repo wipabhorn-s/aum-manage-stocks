@@ -23,6 +23,41 @@ const MS_PER_HOUR = 60 * 60 * 1000;
  */
 export const MIN_CHARGE_THB = 20;
 
+/**
+ * ต่ออายุได้ก็ต่อเมื่อเหลือไม่เกิน 30 วัน (หรือหมดอายุไปแล้ว)
+ *
+ * applyRenewal() ต่อท้ายวันหมดอายุเดิมเสมอ ผู้ใช้จึงไม่ "เสีย" วันที่จ่ายไป
+ * แม้กดตั้งแต่เนิ่นๆ แต่การเปิดปุ่มไว้ตลอดปีทำให้คนกดจ่ายล่วงหน้าโดยไม่ตั้งใจ
+ * แล้วมาขอคืนเงินทีหลัง — ซึ่งระบบนี้ไม่มีเส้นทางคืนเงินอัตโนมัติ
+ */
+export const RENEWAL_WINDOW_DAYS = 30;
+
+const MS_PER_DAY = 24 * 60 * 60 * 1000;
+
+/**
+ * ถึงกำหนดให้ต่ออายุหรือยัง
+ *
+ * expiresAt = null คือแพ็กเกจที่ไม่มีวันหมดอายุ (Free) ซึ่งไม่มีอะไรให้ต่อ
+ */
+export function isRenewalDue(
+  expiresAt: Date | null,
+  now: Date = new Date(),
+): boolean {
+  if (expiresAt === null) return false;
+  return (
+    expiresAt.getTime() - now.getTime() <= RENEWAL_WINDOW_DAYS * MS_PER_DAY
+  );
+}
+
+/** จำนวนวันที่เหลือก่อนหมดอายุ ปัดขึ้น — ติดลบแปลว่าหมดอายุไปแล้ว */
+export function daysUntilExpiry(
+  expiresAt: Date | null,
+  now: Date = new Date(),
+): number | null {
+  if (expiresAt === null) return null;
+  return Math.ceil((expiresAt.getTime() - now.getTime()) / MS_PER_DAY);
+}
+
 export interface PlanPricing {
   id: string;
   code: string;

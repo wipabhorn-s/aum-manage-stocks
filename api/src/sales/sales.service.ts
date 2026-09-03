@@ -9,6 +9,7 @@ import { Prisma } from '../database/generated/prisma/client';
 import { PrismaService } from '../database/prisma.service';
 import type { StockChange } from '../notifications/low-stock.notifier';
 import { LowStockNotifier } from '../notifications/low-stock.notifier';
+import { StockLotsService } from '../stock/stock-lots.service';
 import { StockMovementsService } from '../stock-movements/stock-movements.service';
 import type { CreateSaleDto, SaleQueryDto } from './dto/sales.dto';
 import {
@@ -32,6 +33,7 @@ export class SalesService {
     @Inject(SALES_SUBSCRIPTION_PORT)
     private readonly subscriptions: SalesSubscriptionPort,
     private readonly lowStock: LowStockNotifier,
+    private readonly lots: StockLotsService,
   ) {}
 
   scan(shopId: string, staffId: string, barcode: string) {
@@ -64,7 +66,18 @@ export class SalesService {
             (requested.get(item.shopProductId) ?? 0) + item.quantity,
           );
 
+        /**
+         * ลำดับสำคัญมาก — ต้องตัดสต็อกกับล็อต "ก่อน" สร้างบิล
+         *
+         * เพราะทุนที่ต้อง snapshot ลงบิลคือทุนของล็อตที่ถูกตัดไปจริง ไม่ใช่
+         * shop_products.cost_price ปัจจุบัน ซึ่งจะรู้ได้ก็ต่อเมื่อตัดล็อตแล้ว
+         *
+         * ภายในแต่ละรายการยังต้องตัด stock_qty ก่อนตัดล็อตด้วย เพราะตัวที่เช็ค
+         * ว่าของพอไหมคือ adjustStock() ถ้าสลับกันจะไปแตะล็อตก่อนแล้วค่อยพบว่า
+         * ของไม่พอ ซึ่ง rollback คืนให้อยู่แล้วแต่ทำงานเปล่าและอ่านยากกว่า
+         */
         const items = [];
+        const stockChanges: StockChange[] = [];
         let total = new Prisma.Decimal(0);
         for (const [shopProductId, quantity] of requested) {
           const product = await this.products.getForSale(
@@ -72,9 +85,33 @@ export class SalesService {
             shopId,
             shopProductId,
           );
+
+          const stock = await this.products.adjustStock(tx, {
+            shopId,
+            shopProductId,
+            quantityDelta: -quantity,
+          });
+          stockChanges.push({
+            shopProductId,
+            quantityBefore: stock.quantityBefore,
+            quantityAfter: stock.quantityAfter,
+          });
+
+          const consumed = await this.lots.consume(tx, {
+            shopProductId,
+            quantity,
+          });
+
           const lineTotal = product.unitPrice.mul(quantity);
           total = total.add(lineTotal);
-          items.push({ ...product, quantity, lineTotal });
+          items.push({
+            ...product,
+            // ทุนจากล็อตที่ตัดจริง ทับค่าที่ getForSale() อ่านมาจาก shop_products
+            costPrice: consumed.unitCost,
+            quantity,
+            lineTotal,
+            stock,
+          });
         }
 
         const sale = await tx.sale.create({
@@ -110,26 +147,17 @@ export class SalesService {
           include: { items: true },
         });
 
-        const stockChanges: StockChange[] = [];
+        // สต็อกถูกตัดไปแล้วด้านบน เหลือแค่บันทึกประวัติที่ต้องอ้าง sale_item.id
         for (const item of items) {
-          const stock = await this.products.adjustStock(tx, {
-            shopId,
-            shopProductId: item.shopProductId,
-            quantityDelta: -item.quantity,
-          });
-          stockChanges.push({
-            shopProductId: item.shopProductId,
-            quantityBefore: stock.quantityBefore,
-            quantityAfter: stock.quantityAfter,
-          });
           await this.movements.create(tx, {
             shopId,
             shopProductId: item.shopProductId,
             actorId: staffId,
             movementType: 'SALE',
+            unitCost: item.costPrice,
             quantityDelta: -item.quantity,
-            quantityBefore: stock.quantityBefore,
-            quantityAfter: stock.quantityAfter,
+            quantityBefore: item.stock.quantityBefore,
+            quantityAfter: item.stock.quantityAfter,
             source: 'WEB',
             saleId: sale.id,
             referenceType: 'SALE_ITEM',
@@ -196,11 +224,29 @@ export class SalesService {
             shopProductId: item.shopProductId,
             quantityDelta: item.quantity,
           });
+          /**
+           * คืนของเป็นล็อตใหม่ด้วยทุนที่ snapshot ไว้ในบิล ไม่ใช่คืนเข้าล็อตเดิม
+           *
+           * เลือกแบบนี้เพราะถ้าจะคืนเข้าล็อตเดิมต้องจำว่าบิลนั้นตัดจากล็อตไหนไป
+           * เท่าไหร่ ซึ่งต้องเพิ่มตารางอีกใบ ส่วนวิธีนี้ถูกต้องทางบัญชีอยู่แล้ว —
+           * ของกลับเข้ามาด้วยทุนเดียวกับตอนที่มันออกไป
+           *
+           * ผลข้างเคียงที่ยอมรับ: ของที่ถูกยกเลิกจะไปต่อท้ายคิว FIFO แทนที่จะ
+           * กลับไปอยู่ตำแหน่งเดิม ซึ่งกระทบลำดับการตัดครั้งถัดไปเล็กน้อย
+           */
+          await this.lots.receive(tx, {
+            shopProductId: item.shopProductId,
+            quantity: item.quantity,
+            unitCost: Number(item.costPrice),
+            note: `คืนจากบิลที่ยกเลิก ${sale.saleNo}`,
+          });
+
           await this.movements.create(tx, {
             shopId,
             shopProductId: item.shopProductId,
             actorId: staffId,
             movementType: 'SALE_VOID',
+            unitCost: item.costPrice,
             quantityDelta: item.quantity,
             quantityBefore: stock.quantityBefore,
             quantityAfter: stock.quantityAfter,

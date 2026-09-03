@@ -63,7 +63,7 @@ export default function LockedChatbotPage() {
               </div>
             </div>
 
-            <Button variant="gradient" render={<Link href="/membership/upgrade" />}>
+            <Button variant="gradient" render={<Link href="/membership?upgrade=1" />}>
               {t.upgradeBtn}
             </Button>
             <div className="mt-3">

@@ -22,8 +22,10 @@ const OTHER = '0199a0e0-0000-7000-8000-000000000002';
 const PAYMENT = '0199a0e0-0000-7000-8000-000000000100';
 const SUB = '0199a0e0-0000-7000-8000-000000000200';
 const NOW = new Date('2026-08-28T00:00:00.000Z');
-/** แพ็กเกจปัจจุบันยังเหลืออายุอีกครึ่งปี */
+/** แพ็กเกจปัจจุบันยังเหลืออายุอีกครึ่งปี — ยังต่ออายุไม่ได้ */
 const FUTURE = new Date('2027-02-28T00:00:00.000Z');
+/** เหลือ 18 วัน — อยู่ในหน้าต่างต่ออายุ 30 วันแล้ว */
+const DUE_SOON = new Date('2026-09-15T00:00:00.000Z');
 
 const FREE = {
   id: 'p-free',
@@ -158,6 +160,32 @@ describe('PaymentsService', () => {
       ).rejects.toBeInstanceOf(NotFoundException);
     });
 
+    it('บล็อกการต่ออายุที่ยังไม่ถึงกำหนด (เหลือเกิน 30 วัน)', async () => {
+      onPlan(PLUS); // FUTURE = เหลืออีกครึ่งปี
+      prisma.subscriptionPlan.findUnique.mockResolvedValue(PLUS);
+
+      await expect(
+        service.createSubscriptionPaymentIntent(USER, 'PLUS'),
+      ).rejects.toBeInstanceOf(ConflictException);
+      expect(stripe.createCardPaymentIntent).not.toHaveBeenCalled();
+    });
+
+    // ใบค้างหนึ่งใบต่อผู้ใช้หนึ่งคน — กันประวัติงอกหลายแถวต่อการซื้อครั้งเดียว
+    it('บล็อกการเปิดใบใหม่เมื่อยังมีใบค้างอยู่', async () => {
+      onPlan(FREE);
+      prisma.subscriptionPlan.findUnique.mockResolvedValue(PLUS);
+      prisma.payment.findFirst.mockResolvedValue({
+        id: PAYMENT,
+        status: PaymentStatus.PENDING,
+        createdAt: NOW,
+      });
+
+      await expect(
+        service.createSubscriptionPaymentIntent(USER, 'PLUS'),
+      ).rejects.toBeInstanceOf(ConflictException);
+      expect(prisma.payment.create).not.toHaveBeenCalled();
+    });
+
     // SRS §66/§110 — ไม่มีเส้นทางลดแพ็กเกจ
     it('บล็อกการซื้อแพ็กเกจที่ quota ต่ำกว่าแพ็กเกจปัจจุบัน', async () => {
       onPlan(PRO);
@@ -170,7 +198,7 @@ describe('PaymentsService', () => {
     });
 
     it('ซื้อแพ็กเกจเดิม = ต่ออายุ (purpose RENEWAL)', async () => {
-      onPlan(PLUS);
+      onPlan(PLUS, { expiresAt: DUE_SOON });
       prisma.subscriptionPlan.findUnique.mockResolvedValue(PLUS);
 
       await service.createSubscriptionPaymentIntent(USER, 'PLUS');
@@ -289,7 +317,7 @@ describe('PaymentsService', () => {
     });
 
     it('ต่ออายุแพ็กเกจเดิม = จ่ายเต็ม ไม่ใช่ส่วนต่าง', async () => {
-      onPlan(PLUS);
+      onPlan(PLUS, { expiresAt: DUE_SOON });
       prisma.subscriptionPlan.findUnique.mockResolvedValue(PLUS);
 
       await service.createSubscriptionPaymentIntent(USER, 'PLUS');
@@ -341,6 +369,52 @@ describe('PaymentsService', () => {
         expect.objectContaining({ clientSecret: 'pi_test_1_secret' }),
       );
       expect(prisma.payment.update).toHaveBeenCalled();
+    });
+  });
+
+  describe('cancelPayment', () => {
+    it('ยกเลิกฝั่ง Stripe ก่อน แล้วค่อยพลิกแถวเป็น CANCELLED', async () => {
+      prisma.payment.findFirst.mockResolvedValue({
+        id: PAYMENT,
+        userId: USER,
+        status: PaymentStatus.PENDING,
+        providerRef: 'pi_test_1',
+        createdAt: NOW,
+      });
+
+      await service.cancelPayment(USER, PAYMENT);
+
+      expect(stripe.cancelPaymentIntent).toHaveBeenCalledWith('pi_test_1');
+      expect(prisma.payment.updateMany).toHaveBeenCalledWith(
+        containing({
+          where: containing({ id: PAYMENT, status: PaymentStatus.PENDING }),
+          data: { status: PaymentStatus.CANCELLED },
+        }),
+      );
+    });
+
+    it('ยกเลิกใบที่จ่ายแล้วไม่ได้', async () => {
+      prisma.payment.findFirst.mockResolvedValue({
+        id: PAYMENT,
+        userId: USER,
+        status: PaymentStatus.PAID,
+        providerRef: 'pi_test_1',
+        createdAt: NOW,
+      });
+
+      await expect(service.cancelPayment(USER, PAYMENT)).rejects.toBeInstanceOf(
+        BadRequestException,
+      );
+      expect(stripe.cancelPaymentIntent).not.toHaveBeenCalled();
+    });
+
+    // กรองด้วย userId ตั้งแต่ query — ของคนอื่นต้องเป็น 404 ไม่ใช่ 403
+    it('ตอบ 404 เมื่อใบไม่ใช่ของผู้ใช้คนนี้', async () => {
+      prisma.payment.findFirst.mockResolvedValue(null);
+
+      await expect(
+        service.cancelPayment(OTHER, PAYMENT),
+      ).rejects.toBeInstanceOf(NotFoundException);
     });
   });
 
@@ -551,8 +625,32 @@ describe('PaymentsService', () => {
       await service.listMyPayments(USER);
 
       expect(prisma.payment.findMany).toHaveBeenCalledWith(
-        containing({ where: { userId: USER } }),
+        containing({
+          where: containing({ userId: USER }),
+        }),
       );
+    });
+
+    it('listMyPayments ไม่เอาใบที่ถูกยกเลิกมาตั้งแต่ตอนคิวรี', async () => {
+      await service.listMyPayments(USER);
+
+      const [args] = prisma.payment.findMany.mock.calls.at(-1) as [
+        { where: { status?: { not?: string } } },
+      ];
+      expect(args.where.status?.not).toBe('CANCELLED');
+    });
+
+    /**
+     * เดิม take = 5 ซึ่งไม่ใช่การแบ่งหน้า แต่ตัดรายการที่เก่ากว่านั้นทิ้งไปเลย
+     * โดยไม่มีทางเปิดดู — ฝั่งเว็บแสดงทั้งหมดในกล่องที่เลื่อนได้แทน
+     */
+    it('listMyPayments คืนประวัติทั้งหมด ไม่ได้ตัดเหลือ 5 รายการล่าสุด', async () => {
+      await service.listMyPayments(USER);
+
+      const [args] = prisma.payment.findMany.mock.calls.at(-1) as [
+        { take?: number },
+      ];
+      expect(args.take).toBeGreaterThanOrEqual(100);
     });
   });
 });

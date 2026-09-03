@@ -15,10 +15,23 @@ export type SendChatMessageDto = z.infer<typeof SendChatMessageSchema>;
  * path ใหม่ เพราะ allowlist ของ proxy ฝั่งเว็บ (backend-endpoints.ts) ครอบ
  * chat/messages ไว้อยู่แล้ว จะได้ไม่ต้องไปแก้ไฟล์กลางของแพรว
  */
-export const SelectChatProductSchema = z.object({
-  pendingActionId: z.uuid(),
-  shopProductId: z.uuid(),
-});
+/**
+ * [อั้ม] ใช้ทั้งเลือกสินค้า (ชื่อกำกวม) และเลือกร้านปลายทาง (คำสั่งย้าย)
+ *
+ * ต้องส่งมาอย่างใดอย่างหนึ่ง ไม่ใช่ทั้งคู่และไม่ใช่ไม่ส่งเลย — สองอย่างนี้เป็นคนละ
+ * ขั้นของรายการเดียวกัน ถ้าส่งมาพร้อมกันแปลว่าฝั่ง client เข้าใจสถานะผิด
+ */
+export const SelectChatProductSchema = z
+  .object({
+    pendingActionId: z.uuid(),
+    shopProductId: z.uuid().optional(),
+    destinationShopId: z.uuid().optional(),
+  })
+  .refine(
+    (value) =>
+      Boolean(value.shopProductId) !== Boolean(value.destinationShopId),
+    'ต้องระบุ shopProductId หรือ destinationShopId อย่างใดอย่างหนึ่ง',
+  );
 
 export type SelectChatProductDto = z.infer<typeof SelectChatProductSchema>;
 

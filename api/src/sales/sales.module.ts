@@ -70,5 +70,7 @@ const isSalesMockMode = (config: ConfigService) =>
       ) => (isSalesMockMode(config) ? mock : actual),
     },
   ],
+  // [อั้ม] แชทบอทเรียกใช้ตรรกะการขายตัวเดียวกับหน้าขาย จะได้ไม่มีสองความจริง
+  exports: [SalesService],
 })
 export class SalesModule {}

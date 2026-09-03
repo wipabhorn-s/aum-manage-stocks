@@ -277,8 +277,31 @@ describe('UsersService', () => {
       expect(prisma.$transaction).toHaveBeenCalledTimes(1);
       expect(prisma.user.update).toHaveBeenCalledWith({
         where: { id: STAFF },
-        data: { deletedAt: anyDate() },
+        // ต้องล้าง lineUserId/googleId ด้วย ไม่ใช่ตั้งแค่ deletedAt — ดูคอมเมนต์
+        // ใน deleteStaff() ว่าทำไมการเก็บค้างไว้ถึงอันตราย
+        data: { deletedAt: anyDate(), lineUserId: null, googleId: null },
       });
+    });
+
+    // แถวที่ตายแล้วต้องไม่จองตัวตน LINE ของคนเป็นๆ ไว้ ไม่งั้นอดีตพนักงานที่
+    // ล็อกอินด้วย LINE จะชน unique constraint แล้วได้ error 500 แทนบัญชีใหม่
+    it('deleteStaff คืนตัวตน LINE/Google ให้เจ้าตัวไปใช้สมัครใหม่ได้', async () => {
+      prisma.user.findFirst.mockResolvedValue(
+        makeUser({
+          id: STAFF,
+          role: 'SHOP_STAFF',
+          ownerId: OWNER,
+          lineUserId: 'U_line_staff',
+        }),
+      );
+
+      await service.deleteStaff(OWNER, STAFF);
+
+      const [[updateArgs]] = prisma.user.update.mock.calls as [
+        [{ data: { lineUserId: string | null; googleId: string | null } }],
+      ];
+      expect(updateArgs.data.lineUserId).toBeNull();
+      expect(updateArgs.data.googleId).toBeNull();
     });
 
     it('resetStaffPassword ไม่ต้องรู้รหัสเดิม แต่เตะ session พนักงานทิ้ง', async () => {

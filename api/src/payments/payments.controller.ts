@@ -50,6 +50,16 @@ export class PaymentsController {
     return this.paymentsService.retryPaymentIntent(userId, id);
   }
 
+  /** ยกเลิกใบที่ค้าง — ปลดล็อกให้ผู้ใช้เปิดรายการใหม่ได้ก่อนครบ 24 ชม. */
+  @Roles(UserRole.SHOP_OWNER)
+  @Post(':id/cancel')
+  async cancelPayment(
+    @CurrentUser('sub') userId: string,
+    @Param('id', ParseUUIDPipe) id: string,
+  ) {
+    return this.paymentsService.cancelPayment(userId, id);
+  }
+
   @Roles(UserRole.SHOP_OWNER)
   @Post(':id/confirm')
   async confirmPaymentIntent(

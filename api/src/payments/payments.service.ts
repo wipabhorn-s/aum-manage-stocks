@@ -6,10 +6,13 @@ import {
 } from '@/database/generated/prisma/enums';
 import { PaidPlanCode } from '@/payments/dto/create-subscription-payment.dto';
 import {
+  daysUntilExpiry,
   isPaymentWindowOpen,
+  isRenewalDue,
   paymentExpiresAt,
   resolveUpgradeCharge,
   PAYMENT_WINDOW_HOURS,
+  RENEWAL_WINDOW_DAYS,
 } from '@/payments/payment-pricing.util';
 import { StripeService } from '@/payments/stripe.service';
 import { SubscriptionsService } from '@/subscriptions/subscriptions.service';
@@ -25,6 +28,15 @@ import { ConfigService } from '@nestjs/config';
 import type Stripe from 'stripe';
 
 const PROVIDER = 'stripe';
+
+/**
+ * เพดานของประวัติการชำระเงินที่ส่งกลับไป — ฝั่งเว็บแสดงทั้งหมดในกล่องที่เลื่อนได้
+ *
+ * เดิม take = 5 ซึ่งไม่ใช่การแบ่งหน้า แต่เป็นการ "ตัดทิ้ง" รายการที่เก่ากว่านั้น
+ * ไปเลยโดยไม่มีทางเปิดดู ตัวเลขนี้จึงเป็นแค่กันเคสสุดโต่งไม่ให้ payload บาน
+ * ไม่ใช่จำนวนที่ตั้งใจให้ผู้ใช้เห็น — ซื้อ/ต่ออายุกันปีละครั้ง 100 คือทั้งหมดจริง
+ */
+const HISTORY_LIMIT = 100;
 /** Stripe คิดเงินเป็นหน่วยย่อยที่สุด — บาทต้องคูณ 100 เป็นสตางค์ */
 const SATANG_PER_BAHT = 100;
 
@@ -69,6 +81,38 @@ export class PaymentsService {
       targetPlan.id === subscription.planId
         ? PaymentPurpose.RENEWAL
         : PaymentPurpose.NEW_SUBSCRIPTION;
+
+    // ต่ออายุก่อนกำหนดไม่ได้ — applyRenewal() ต่อท้ายวันเดิมให้ก็จริง แต่เงิน
+    // ที่จ่ายล่วงหน้าหลายเดือนคืนไม่ได้ เพราะระบบไม่มีเส้นทางคืนเงินอัตโนมัติ
+    if (purpose === PaymentPurpose.RENEWAL) {
+      const daysLeft = daysUntilExpiry(subscription.expiresAt);
+      if (!isRenewalDue(subscription.expiresAt)) {
+        throw new ConflictException({
+          message:
+            daysLeft === null
+              ? 'แพ็กเกจนี้ไม่มีวันหมดอายุ จึงไม่ต้องต่ออายุ'
+              : `ยังไม่ถึงกำหนดต่ออายุ — ต่ออายุได้เมื่อเหลือไม่เกิน ${RENEWAL_WINDOW_DAYS} วัน (ตอนนี้เหลือ ${daysLeft} วัน)`,
+          code: 'RENEWAL_NOT_DUE',
+          daysLeft,
+        });
+      }
+    }
+
+    // ห้ามเปิดใบใหม่ทับใบที่ยังค้าง — ไม่งั้นประวัติจะงอกหลายแถวต่อการซื้อ
+    // หนึ่งครั้ง และผู้ใช้ที่ถือ client secret ของใบเก่าอยู่ยังจ่ายใบนั้นได้
+    // ผู้ใช้ต้องจ่ายให้จบ หรือกดยกเลิก (POST /payments/:id/cancel) ก่อน
+    // reusePaymentId = การกด "ชำระอีกครั้ง" ของใบเดิม จึงได้รับยกเว้น
+    if (!reusePaymentId) {
+      const open = await this.findOpenPayment(userId);
+      if (open) {
+        throw new ConflictException({
+          message:
+            'คุณมีรายการชำระเงินที่ยังไม่เสร็จอยู่ กรุณาชำระให้เสร็จหรือกดยกเลิกรายการนั้นก่อน',
+          code: 'PAYMENT_ALREADY_PENDING',
+          paymentId: open.id,
+        });
+      }
+    }
 
     // อัปเกรดจากแพ็กเกจที่ยังไม่หมดอายุ = เก็บเฉพาะส่วนต่าง แล้วคงวันหมดอายุเดิม
     const charge = resolveUpgradeCharge({
@@ -153,9 +197,15 @@ export class PaymentsService {
     await this.expireStalePaymentsForUser(userId);
 
     const payments = await this.prisma.payment.findMany({
-      where: { userId },
+      // ใบที่ผู้ใช้กดยกเลิกเองไม่ใช่ประวัติการซื้อ มันคือรายการที่ตั้งใจไม่ให้
+      // เกิดขึ้น และไม่เหลืออะไรให้ทำต่อ — ตัดที่คิวรี ไม่ใช่ไปกรองฝั่งเว็บ
+      // จะได้ไม่กินโควตาของ take ไปเปล่าๆ
+      //
+      // FAILED ยังอยู่ — ใบที่หมดเวลา 24 ชม. ถูกพลิกเป็น FAILED (expirePayment)
+      // ไม่ได้หายไปไหน ผู้ใช้ต้องเห็นว่าความพยายามครั้งนั้นจบยังไง
+      where: { userId, status: { not: PaymentStatus.CANCELLED } },
       orderBy: { createdAt: 'desc' },
-      take: 5,
+      take: HISTORY_LIMIT,
       include: { subscription: { include: { plan: true } } },
     });
 
@@ -203,7 +253,61 @@ export class PaymentsService {
         (row.status === PaymentStatus.PENDING ||
           row.status === PaymentStatus.FAILED) &&
         isPaymentWindowOpen(row.createdAt, now),
+      // ยกเลิกได้เฉพาะใบที่ยังค้างจริงๆ — ใบที่ FAILED ไปแล้วไม่บล็อกการซื้อ
+      // รอบใหม่อยู่แล้ว จึงไม่ต้องมีปุ่มให้กด
+      cancellable:
+        row.status === PaymentStatus.PENDING &&
+        isPaymentWindowOpen(row.createdAt, now),
     }));
+  }
+
+  /**
+   * ใบที่ยัง "เปิดค้าง" อยู่ของผู้ใช้คนนี้ — มีได้มากสุดหนึ่งใบ
+   *
+   * ต้องกรองด้วยหน้าต่าง 24 ชม. ด้วย ไม่ใช่ดูแค่ status: ระหว่างรอบ cron
+   * ใบที่หมดอายุแล้วยังเป็น PENDING อยู่ในฐานข้อมูล ถ้านับใบพวกนั้นด้วยผู้ใช้
+   * จะซื้อใหม่ไม่ได้เลยจนกว่า cron จะเดิน
+   */
+  private async findOpenPayment(userId: string) {
+    const cutoff = new Date(Date.now() - PAYMENT_WINDOW_HOURS * 60 * 60 * 1000);
+    return this.prisma.payment.findFirst({
+      where: {
+        userId,
+        status: PaymentStatus.PENDING,
+        provider: PROVIDER,
+        createdAt: { gte: cutoff },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+  }
+
+  /**
+   * ผู้ใช้กดยกเลิกใบที่ค้างเอง — ทางเดียวที่จะเปิดใบใหม่ได้ก่อนครบ 24 ชม.
+   *
+   * ลำดับเดียวกับ expirePayment(): ยกเลิกฝั่ง Stripe ให้สำเร็จก่อนค่อยพลิก
+   * สถานะ ถ้าพลิกก่อนแล้วยกเลิกไม่ได้ ผู้ใช้ที่ยังถือ client secret อยู่จะจ่าย
+   * ผ่าน แล้ว fulfillPaymentIntent() จะเมินเพราะแถวไม่ใช่ PENDING แล้ว
+   * = ตัดเงินแล้วไม่ได้แพ็กเกจ และไม่มี webhook มาบอกเราด้วย
+   */
+  async cancelPayment(userId: string, paymentId: string) {
+    const payment = await this.prisma.payment.findFirst({
+      where: { id: paymentId, userId },
+    });
+    if (!payment) throw new NotFoundException('ไม่พบรายการชำระเงินนี้');
+    if (payment.status === PaymentStatus.PAID) {
+      throw new BadRequestException('รายการนี้ชำระเงินแล้ว ยกเลิกไม่ได้');
+    }
+    if (payment.status !== PaymentStatus.PENDING) {
+      // ยกเลิกใบที่ปิดไปแล้วถือว่าสำเร็จ ผู้ใช้ได้ผลลัพธ์ที่ต้องการอยู่ดี
+      return { message: 'รายการนี้ถูกปิดไปแล้ว' };
+    }
+
+    await this.stripeService.cancelPaymentIntent(payment.providerRef);
+    await this.prisma.payment.updateMany({
+      where: { id: payment.id, status: PaymentStatus.PENDING },
+      data: { status: PaymentStatus.CANCELLED },
+    });
+    return { message: 'ยกเลิกรายการชำระเงินแล้ว' };
   }
 
   /** เหมือน expireStalePayments() แต่จำกัดเฉพาะของผู้ใช้คนเดียว */

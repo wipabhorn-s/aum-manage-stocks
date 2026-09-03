@@ -188,7 +188,7 @@ export default function InsightsPage() {
               <p className="mx-auto mb-7 max-w-md text-sm leading-relaxed text-muted-foreground">
                 {t.lockedBody}
               </p>
-              <Button render={<Link href="/membership/upgrade" />} variant="dark">
+              <Button render={<Link href="/membership?upgrade=1" />} variant="dark">
                 {t.upgrade}
               </Button>
             </div>

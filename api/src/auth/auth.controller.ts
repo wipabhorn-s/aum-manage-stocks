@@ -30,8 +30,10 @@ export class AuthController {
 
   @Post('register')
   async register(@Body() registerDto: RegisterDto) {
-    await this.authService.register(registerDto);
-    return { message: 'Register successfully' };
+    // emailSent = false แปลว่าบัญชีถูกสร้างแล้วแต่เมลยืนยันส่งไม่ออก
+    // ฝั่งเว็บเอาไปบอกให้ผู้ใช้กดขอลิงก์ใหม่ แทนที่จะนั่งรอเมลที่ไม่มีวันมา
+    const { emailSent } = await this.authService.register(registerDto);
+    return { message: 'Register successfully', emailSent };
   }
 
   @HttpCode(HttpStatus.OK)

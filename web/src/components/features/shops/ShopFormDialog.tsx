@@ -16,7 +16,10 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { FormError } from "@/components/features/auth/form-error";
+import {
+  ApiErrorNotice,
+  toApiFailure,
+} from "@/components/shared/ApiErrorNotice";
 import { useLocale } from "@/components/i18n/LocaleContext";
 import { ApiError } from "@/lib/api-client";
 import { useCreateShop, useUpdateShop, type Shop } from "@/lib/hooks/use-inventory";
@@ -262,11 +265,21 @@ export function ShopFormDialog({ open, onOpenChange, shop }: ShopFormDialogProps
             }}
           />
 
-          <FormError
-            message={
+          {/*
+            ใช้ ApiErrorNotice แทน FormError เพราะโควตาร้านเต็มตอบ code
+            SHOP_QUOTA_EXCEEDED กลับมา แล้ว ApiErrorNotice จะเติมลิงก์ไป
+            /membership ให้เอง — FormError รับแค่ string จึงพาไปไหนไม่ได้
+          */}
+          <ApiErrorNotice
+            error={
+              mutationError instanceof ApiError
+                ? toApiFailure(mutationError)
+                : null
+            }
+            fallback={
               mutationError
                 ? toMessage(mutationError, isEditing ? t.updateError : t.createError)
-                : null
+                : undefined
             }
           />
 

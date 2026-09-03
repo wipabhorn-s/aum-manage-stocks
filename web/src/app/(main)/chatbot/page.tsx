@@ -18,6 +18,8 @@ import { useSelectedShop } from '@/components/shared/SelectedShopContext';
 import {
   useApplyChatCommand,
   useSelectChatCandidate,
+  useSelectChatDestination,
+  type DestinationShop,
   type StockCandidate,
 } from '@/lib/hooks/use-chat';
 
@@ -25,11 +27,11 @@ const content = {
   th: {
     title: 'แชทบอทรับสต็อก',
     titleFor: (shop: string) => `แชทบอทของร้าน ${shop}`,
-    inputPh: 'พิมพ์คำสั่ง เช่น "เพิ่มโค้ก 10" หรือ "ลดน้ำเปล่า 5"',
+    inputPh: 'พิมพ์คำสั่ง เช่น "เพิ่มโค้ก 10" "ขายโค้ก 2" หรือ "ย้ายโค้ก 5 ไปร้าน สาขาสอง"',
     sendBtn: 'ส่ง →',
     sending: 'กำลังส่ง…',
     caption:
-      'ใช้คำสั่งเดียวกันจากฝั่ง LINE ของร้านได้เลย ระบบจะให้ยืนยันก่อนบันทึกลงจริงทุกครั้ง',
+      'เพิ่ม ลด ขาย ย้ายของไปอีกร้าน และถามยอดคงเหลือได้ ใช้คำสั่งเดียวกันจากฝั่ง LINE ได้เลย ระบบจะให้ยืนยันก่อนบันทึกลงจริงทุกครั้ง',
     confirmBtn: 'ยืนยัน →',
     cancelBtn: 'ยกเลิก',
     working: 'กำลังบันทึก…',
@@ -40,16 +42,18 @@ const content = {
     empty:
       'ทักมาได้เลยครับ เช่น "เพิ่มโค้ก 10" หรือพิมพ์ "ช่วยเหลือ" เพื่อดูวิธีใช้',
     chooseLabel: 'เลือกสินค้าที่ต้องการ',
+    chooseShopLabel: (current: string) =>
+      `ตอนนี้อยู่ที่ร้าน ${current} — เลือกร้านปลายทางที่จะย้ายไป`,
     stockLeft: (qty: number, unit: string) => `เหลือ ${qty} ${unit}`,
   },
   en: {
     title: 'Stock Chatbot',
     titleFor: (shop: string) => `${shop} Chatbot`,
-    inputPh: 'Type a command, e.g. "add 10 coke" or "remove 5 water"',
+    inputPh: 'Type a command, e.g. "add 10 coke", "sell 2 coke" or "move 5 coke to Branch 2"',
     sendBtn: 'Send →',
     sending: 'Sending…',
     caption:
-      "The same commands work from the shop's LINE account. Every change is confirmed before it is saved.",
+      "Add, remove, sell, move stock between shops, and check quantities. The same commands work from the shop's LINE account, and every change is confirmed before it is saved.",
     confirmBtn: 'Confirm →',
     cancelBtn: 'Cancel',
     working: 'Saving…',
@@ -59,6 +63,8 @@ const content = {
     loading: 'Loading…',
     empty: 'Say hello, or try "add 10 coke". Type "help" to see what I can do.',
     chooseLabel: 'Choose the product you meant',
+    chooseShopLabel: (current: string) =>
+      `You are in ${current} — choose the shop to move stock to`,
     stockLeft: (qty: number, unit: string) => `${qty} ${unit} left`,
   },
 };
@@ -70,6 +76,10 @@ export default function ChatbotPage() {
   const [input, setInput] = useState('');
   const [pendingId, setPendingId] = useState<string | null>(null);
   const [candidates, setCandidates] = useState<StockCandidate[]>([]);
+  // [อั้ม] ร้านปลายทางที่เลือกได้ ของคำสั่งย้ายที่ยังไม่ได้ระบุปลายทาง
+  const [destinationShops, setDestinationShops] = useState<DestinationShop[]>(
+    [],
+  );
   const [actionError, setActionError] = useState<string | null>(null);
 
   const shopsQuery = useShops();
@@ -96,6 +106,7 @@ export default function ChatbotPage() {
   const sendMessage = useSendChatMessage(shopId);
   const applyCommand = useApplyChatCommand(shopId);
   const selectCandidate = useSelectChatCandidate(shopId);
+  const selectDestination = useSelectChatDestination(shopId);
 
   const messages = chatQuery.data?.length
     ? [...chatQuery.data].reverse().map((message) => ({
@@ -121,11 +132,13 @@ export default function ChatbotPage() {
         const payload = result as {
           pendingAction: { id: string; shopProductId: string | null } | null;
           candidates?: StockCandidate[];
+          destinationShops?: DestinationShop[];
         };
 
         setPendingId(payload?.pendingAction?.id ?? null);
         // มี candidates = ชื่อกำกวม ต้องให้เลือกสินค้าก่อนถึงจะยืนยันได้
         setCandidates(payload?.candidates ?? []);
+        setDestinationShops(payload?.destinationShops ?? []);
       },
       onError: (error) =>
         setActionError(toMessage(error, 'ส่งข้อความไม่สำเร็จ')),
@@ -155,6 +168,20 @@ export default function ChatbotPage() {
     );
   };
 
+  const onSelectDestination = (destinationShopId: string) => {
+    if (!pendingId) return;
+    setActionError(null);
+
+    selectDestination.mutate(
+      { pendingId, destinationShopId },
+      {
+        onSuccess: () => setDestinationShops([]),
+        onError: (error) =>
+          setActionError(toMessage(error, 'เลือกร้านปลายทางไม่สำเร็จ')),
+      },
+    );
+  };
+
   const onSelectCandidate = (shopProductId: string) => {
     if (!pendingId) return;
     setActionError(null);
@@ -163,14 +190,24 @@ export default function ChatbotPage() {
       { pendingId, shopProductId },
       {
         // เลือกเสร็จแล้วรายการมี shopProductId ครบ กดยืนยันได้เลย
-        onSuccess: () => setCandidates([]),
+        onSuccess: (result) => {
+          setCandidates([]);
+          // ย้ายสินค้าอาจยังเหลือขั้นเลือกร้านปลายทางต่ออีกขั้น
+          const payload = result as {
+            destinationShops?: DestinationShop[];
+          };
+          setDestinationShops(payload?.destinationShops ?? []);
+        },
         onError: (error) =>
           setActionError(toMessage(error, 'เลือกสินค้าไม่สำเร็จ')),
       },
     );
   };
 
-  const isBusy = applyCommand.isPending || selectCandidate.isPending;
+  const isBusy =
+    applyCommand.isPending ||
+    selectCandidate.isPending ||
+    selectDestination.isPending;
 
   // เลื่อนไปข้อความล่าสุดทุกครั้งที่บทสนทนายาวขึ้น ไม่งั้นผู้ใช้ต้องเลื่อนเอง
   // ทุกครั้งที่บอทตอบ ซึ่งขัดกับความคาดหวังของหน้าแชท
@@ -253,6 +290,28 @@ export default function ChatbotPage() {
                 >
                   {candidate.name} ·{' '}
                   {t.stockLeft(candidate.stockQty, candidate.unit)}
+                </Button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* [อั้ม] เลือกร้านปลายทางของคำสั่งย้าย — ขั้นถัดจากเลือกสินค้า */}
+        {pendingId && destinationShops.length > 0 && (
+          <div className='flex flex-col gap-2 rounded-2xl border border-border bg-background p-3'>
+            <p className='text-xs font-semibold text-muted-foreground'>
+              {t.chooseShopLabel(shopName ?? '')}
+            </p>
+            <div className='flex flex-wrap gap-2'>
+              {destinationShops.map((shop) => (
+                <Button
+                  key={shop.id}
+                  variant='outline'
+                  size='sm'
+                  disabled={isBusy}
+                  onClick={() => onSelectDestination(shop.id)}
+                >
+                  {shop.name}
                 </Button>
               ))}
             </div>

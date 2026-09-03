@@ -13,6 +13,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { useLocale } from "@/components/i18n/LocaleContext";
+import { ApiError } from "@/lib/api-client";
 import { useLineBotInvite } from "@/lib/hooks/use-chat";
 
 const content = {
@@ -117,8 +118,17 @@ export default function LineBotInviteDialog({
               </p>
             </div>
           ) : (
+            /*
+              โชว์เหตุผลที่ api ส่งมาจริง ไม่ใช่ข้อความรวมๆ ของตัวเอง — api แยก
+              ไว้แล้วว่า "ยังไม่ได้ตั้งค่าแชทบอท" (ขาด LINE_CHANNEL_ACCESS_TOKEN)
+              กับ "ดึงข้อมูลจาก LINE ไม่สำเร็จ" ซึ่งคนละทางแก้กันคนละเรื่อง
+              เคสแรกกดใหม่กี่ครั้งก็ไม่มีวันขึ้น การบอกให้ "ลองใหม่อีกครั้ง"
+              จึงพาผู้ใช้ไปผิดทางตั้งแต่ต้น
+            */
             <p className="py-8 text-center text-sm text-destructive">
-              {t.error}
+              {invite.error instanceof ApiError
+                ? invite.error.message
+                : t.error}
             </p>
           )}
         </DialogContent>

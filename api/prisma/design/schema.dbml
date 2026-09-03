@@ -55,7 +55,8 @@ Enum payment_purpose {
 Enum payment_status {
   PENDING
   PAID
-  FAILED
+  FAILED    // จ่ายไม่ผ่าน หรือใบหมดอายุแล้วถูก cron เก็บกวาด
+  CANCELLED // ผู้ใช้กดยกเลิกใบที่ค้างเอง — ปลดล็อกให้เปิดใบใหม่ได้
   REFUNDED
 }
 
@@ -93,6 +94,14 @@ Enum pending_action_status {
   CANCELLED
   EXPIRED
   FAILED
+}
+
+// [อั้ม] แชทบอททำได้ 3 อย่างที่ต้องยืนยันก่อน — แยก intent ไว้เพราะปลายทาง
+// ตอนกดยืนยันคนละเส้นทางกันคนละโมดูล
+Enum pending_action_intent {
+  ADJUST_STOCK   // ปรับสต็อกเฉยๆ ไม่มีเงินเกี่ยวข้อง
+  SELL           // ตัดสต็อกพร้อมคิดเงิน สร้าง sales + sale_items
+  TRANSFER_STOCK // ย้ายไปร้านอื่นของเจ้าของคนเดียวกัน
 }
 
 Enum chat_channel {
@@ -531,6 +540,7 @@ Table stock_movements {
   qty_change int [not null, note: 'บวก = เพิ่ม, ลบ = ตัดออก']
   qty_before int [not null]
   qty_after int [not null]
+  unit_cost decimal(12,2) [null, note: 'ของเข้า = ทุนของล็อตที่เพิ่งเปิด / ของออก = ทุนเฉลี่ยถ่วงน้ำหนักของล็อตที่ถูกตัดจริง — null = แถวที่เกิดก่อนมีระบบล็อต ต้องแสดงเป็น "—" ไม่ใช่ 0']
   note text [null]
   sale_id uuid [null, note: 'มีค่าเมื่อ source = BARCODE_SALE']
   pending_action_id uuid [null, note: 'มีค่าเมื่อ source = CHATBOT']
@@ -547,6 +557,32 @@ Table stock_movements {
   CHECK (qty_after = qty_before + qty_change)  -- invariant ที่ตรวจสอบตัวเองได้
   ตารางนี้คือแหล่งความจริงของสต็อก ส่วน shop_products.stock_qty เป็นแค่ cache
   ต้องบันทึกก่อน/หลังทุกครั้ง (SRS §158, §173)
+  '''
+}
+
+Table stock_lots {
+  id uuid [pk]
+  shop_product_id uuid [not null]
+  unit_cost decimal(12,2) [not null, note: 'ทุนต่อชิ้นของล็อตนี้ — ล็อตที่เปิดแล้วห้ามแก้ทุน']
+  qty_received int [not null, note: 'จำนวนตอนรับเข้า ไม่เปลี่ยนอีก']
+  qty_remaining int [not null, note: 'เหลือเท่าไหร่ ลดลงเรื่อยๆ ตอนถูกตัด — 0 แล้วยังเก็บไว้ ไม่ลบ']
+  note text [null]
+  received_at timestamptz [not null, default: `now()`]
+  created_at timestamptz [not null, default: `now()`]
+
+  indexes {
+    (shop_product_id, received_at) [name: 'idx_stock_lot_fifo']
+  }
+
+  Note: '''
+  ต้นทุนแยกตามล็อตที่รับเข้า ตัดของเก่าก่อน (FIFO)
+
+  ทำไมต้องมี: shop_products.cost_price เก็บได้ค่าเดียว พอรับของล็อตใหม่ที่ทุน
+  ไม่เท่าเดิม ของเก่าที่ยังขายไม่หมดจะถูกตีเป็นราคาใหม่ไปด้วย กำไรของที่ยังไม่ได้
+  ขายจึงคลาดเคลื่อนทันที โดยไม่มีอะไรเตือนเพราะตัวเลขยังดูปกติ
+
+  ล็อตตั้งต้นถูกสร้างแบบ lazy จาก stock_qty/cost_price ที่มีอยู่ ตอนสินค้าตัวนั้น
+  ถูกตัดครั้งแรก — ไม่ใช้สคริปต์ backfill เพราะจะต้องหยุดระบบ
   '''
 }
 
@@ -613,6 +649,8 @@ Table pending_stock_actions {
   channel chat_channel [not null]
   raw_text text [not null, note: 'ข้อความดิบที่ผู้ใช้พิมพ์ เช่น "เพิ่มโค้ก10"']
   parsed_items jsonb [not null, note: 'ผลการตีความ: shop_product_id, product_name, qty_change ต่อรายการ']
+  intent pending_action_intent [not null, default: 'ADJUST_STOCK']
+  destination_shop_id uuid [null, note: 'ร้านปลายทาง มีค่าเมื่อ intent = TRANSFER_STOCK เท่านั้น']
   status pending_action_status [not null, default: 'PENDING']
   error_reason text [null, note: 'ตีความไม่สำเร็จ / ไม่พบสินค้า']
   expires_at timestamptz [not null, note: 'กันผู้ใช้กดยืนยันของเก่าข้ามวัน']
@@ -753,6 +791,7 @@ Ref: stock_movements.shop_product_id > shop_products.id [delete: restrict]
 Ref: stock_movements.user_id > users.id [delete: restrict]
 Ref: stock_movements.sale_id > sales.id [delete: restrict]
 Ref: stock_movements.pending_action_id > pending_stock_actions.id [delete: set null]
+Ref: stock_lots.shop_product_id > shop_products.id [delete: restrict]
 
 // Sales
 Ref: sales.shop_id > shops.id [delete: restrict]
@@ -762,6 +801,9 @@ Ref: sale_items.shop_product_id > shop_products.id [delete: restrict]
 
 // AI
 Ref: pending_stock_actions.shop_id > shops.id [delete: cascade]
+// [อั้ม] restrict ไม่ใช่ cascade — ลบร้านปลายทางทิ้งแล้วคำสั่งย้ายที่ค้างอยู่
+// ต้องไม่หายเงียบ ๆ ไปด้วย ประวัติการสั่งต้องอ่านย้อนได้เสมอ
+Ref: pending_stock_actions.destination_shop_id > shops.id [delete: restrict]
 Ref: pending_stock_actions.user_id > users.id [delete: restrict]
 Ref: chat_messages.shop_id > shops.id [delete: cascade]
 Ref: chat_messages.user_id > users.id [delete: restrict]

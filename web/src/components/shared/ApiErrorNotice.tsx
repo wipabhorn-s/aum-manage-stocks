@@ -14,6 +14,13 @@ import { useLocale } from "@/components/i18n/LocaleContext";
  *
  * SHOP_PAUSED เป็นเคสที่ผู้ใช้แก้เองได้ใน 2 คลิก แต่ต้องรู้ก่อนว่าไปกดที่ไหน
  * บอกแค่ "ร้านนี้ถูกพักอยู่" แล้วปล่อยให้ไปหาเองคือการผลักภาระให้ผู้ใช้
+ *
+ * เกณฑ์ว่า code ไหนควรมีลิงก์: **ผู้ใช้แก้เองได้จากหน้าใดหน้าหนึ่งในเว็บ**
+ * โควตาเต็มและแพ็กเกจหมดอายุแก้ได้ที่ /membership ทั้งหมด จึงอยู่ในตารางนี้
+ *
+ * ที่จงใจไม่ใส่คือกลุ่มที่กดไปแล้วก็ทำอะไรไม่ได้ —
+ * ACCOUNT_SUSPENDED / SHOP_SUSPENDED ต้องให้แอดมินปลดให้ ส่วน *_PERMISSION_DENIED
+ * ต้องให้เจ้าของร้านเปิดสิทธิ์ให้ ไม่มีหน้าไหนที่พาไปแล้วช่วยได้
  */
 
 export type ApiFailure = { message: string; code?: string };
@@ -28,8 +35,28 @@ export function toApiFailure(caught: unknown): ApiFailure {
 }
 
 const content = {
-  th: { resume: "ไปเปิดร้าน →" },
-  en: { resume: "Resume the shop →" },
+  th: {
+    resume: "ไปเปิดร้าน →",
+    renew: "ต่ออายุแพ็กเกจ →",
+    upgrade: "อัปเกรดแพ็กเกจ →",
+  },
+  en: {
+    resume: "Resume the shop →",
+    renew: "Renew your plan →",
+    upgrade: "Upgrade your plan →",
+  },
+};
+
+type ActionKey = keyof (typeof content)["th"];
+
+const ACTION_BY_CODE: Record<string, { href: string; label: ActionKey }> = {
+  SHOP_PAUSED: { href: "/shops", label: "resume" },
+  SUBSCRIPTION_READ_ONLY: { href: "/membership", label: "renew" },
+  PRODUCT_QUOTA_EXCEEDED: { href: "/membership", label: "upgrade" },
+  SHOP_QUOTA_EXCEEDED: { href: "/membership", label: "upgrade" },
+  PLAN_UPGRADE_REQUIRED: { href: "/membership", label: "upgrade" },
+  CHATBOT_NOT_IN_PLAN: { href: "/membership", label: "upgrade" },
+  AI_NOT_IN_PLAN: { href: "/membership", label: "upgrade" },
 };
 
 export function ApiErrorNotice({
@@ -45,15 +72,20 @@ export function ApiErrorNotice({
 
   if (!error && !fallback) return null;
 
+  const action = error?.code ? ACTION_BY_CODE[error.code] : undefined;
+
   return (
-    <p className="rounded-lg bg-destructive/10 px-3 py-2 text-sm text-destructive">
+    <p
+      role="alert"
+      className="rounded-lg bg-destructive/10 px-3 py-2 text-sm text-destructive"
+    >
       {error?.message ?? fallback}
-      {error?.code === "SHOP_PAUSED" && (
+      {action && (
         <Link
-          href="/shops"
+          href={action.href}
           className="ml-2 font-semibold whitespace-nowrap underline underline-offset-4"
         >
-          {t.resume}
+          {t[action.label]}
         </Link>
       )}
     </p>

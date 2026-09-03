@@ -94,8 +94,19 @@ const content = {
     statOut: "จ่ายออก",
     statNet: "สุทธิ",
     statUnit: "ชิ้น",
+    statCost: "มูลค่าต้นทุนสุทธิ",
     statNote: (n: number) => `จาก ${n} รายการที่แสดงอยู่`,
-    columns: ["วันเวลา", "สินค้า", "เปลี่ยนแปลง", "ประเภท", "ผู้ทำรายการ", "หมายเหตุ"],
+    statCostNote: (n: number) =>
+      n > 0 ? `${n} รายการยังไม่มีข้อมูลทุน` : "จากรายการที่แสดงอยู่",
+    columns: [
+      "วันเวลา",
+      "สินค้า",
+      "เปลี่ยนแปลง",
+      "ต้นทุน/ชิ้น",
+      "ประเภท",
+      "ผู้ทำรายการ",
+      "หมายเหตุ",
+    ],
     loading: "กำลังโหลดข้อมูล…",
     empty: "ยังไม่มีประวัติสต็อกของร้านนี้",
     emptyFiltered: "ไม่พบรายการตามตัวกรองที่เลือก",
@@ -127,8 +138,19 @@ const content = {
     statOut: "Stock out",
     statNet: "Net",
     statUnit: "units",
+    statCost: "Net cost value",
     statNote: (n: number) => `across ${n} shown movements`,
-    columns: ["Date/Time", "Product", "Change", "Type", "By", "Note"],
+    statCostNote: (n: number) =>
+      n > 0 ? `${n} movements have no cost recorded` : "across shown movements",
+    columns: [
+      "Date/Time",
+      "Product",
+      "Change",
+      "Unit cost",
+      "Type",
+      "By",
+      "Note",
+    ],
     loading: "Loading…",
     empty: "No stock history for this shop yet",
     emptyFiltered: "No movements match these filters",
@@ -145,6 +167,31 @@ function toIso(date: string, endOfDay: boolean): string | undefined {
   if (!date) return undefined;
   const parsed = new Date(`${date}T${endOfDay ? "23:59:59.999" : "00:00:00.000"}`);
   return Number.isNaN(parsed.getTime()) ? undefined : parsed.toISOString();
+}
+
+/**
+ * ทุนมาเป็น string (Decimal ฝั่ง api) — แปลงเป็นตัวเลข หรือ null ถ้ายังไม่มีข้อมูล
+ *
+ * รับ undefined ด้วยเพราะ pr ฝั่งเว็บกับฝั่ง api อาจขึ้นไม่พร้อมกัน ถ้าเว็บขึ้นก่อน
+ * แถวที่ได้จะไม่มีฟิลด์นี้เลย ซึ่งถ้าไม่กันไว้จะกลายเป็น ฿NaN เต็มตาราง
+ */
+function toCost(value: string | null | undefined): number | null {
+  if (value === null || value === undefined) return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+/** ทุนต่อชิ้นต้องเห็นสตางค์ ไม่งั้น 12.67 กับ 12.99 จะดูเท่ากันหมด */
+function baht(value: number, locale: string): string {
+  return `฿${value.toLocaleString(locale === "th" ? "th-TH" : "en-US", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}`;
+}
+
+/** ติดลบใช้ − (U+2212) ให้ตรงกับตัวเลขจำนวนชิ้นด้านบน ไม่ใช่ยัดไว้หลัง ฿ */
+function signedBaht(value: number, locale: string): string {
+  return `${value < 0 ? "−" : ""}${baht(Math.abs(value), locale)}`;
 }
 
 function displayName(user: {
@@ -229,11 +276,27 @@ export default function StockHistoryPage() {
   const totals = useMemo(() => {
     let stockIn = 0;
     let stockOut = 0;
+    let costValue = 0;
+    let withoutCost = 0;
     for (const row of rows) {
       if (row.quantityDelta >= 0) stockIn += row.quantityDelta;
       else stockOut += -row.quantityDelta;
+
+      /**
+       * ทุนที่เป็น null คือ "ยังไม่มีข้อมูล" ไม่ใช่ 0 — ถ้านับเป็น 0 เข้าไปในผลรวม
+       * มูลค่าจะต่ำกว่าความจริงโดยไม่มีอะไรบอก จึงนับแยกแล้วเอาไปบอกใต้ตัวเลขแทน
+       */
+      const cost = toCost(row.unitCost);
+      if (cost === null) withoutCost += 1;
+      else costValue += cost * row.quantityDelta;
     }
-    return { stockIn, stockOut, net: stockIn - stockOut };
+    return {
+      stockIn,
+      stockOut,
+      net: stockIn - stockOut,
+      costValue,
+      withoutCost,
+    };
   }, [rows]);
 
   const hasFilters = Object.values(applied).some((value) => value !== "");
@@ -247,7 +310,7 @@ export default function StockHistoryPage() {
       <TopBar title={t.title} />
       <main className="flex-1 overflow-y-auto px-4 py-5 sm:px-6 lg:px-9 lg:py-8">
         <div className="flex flex-col gap-5">
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
             <StatTile
               label={t.statIn}
               value={`+${totals.stockIn.toLocaleString()}`}
@@ -268,6 +331,15 @@ export default function StockHistoryPage() {
               unit={t.statUnit}
               tone={totals.net < 0 ? "text-destructive" : "text-foreground"}
               note={shopName}
+            />
+            <StatTile
+              label={t.statCost}
+              value={signedBaht(totals.costValue, locale)}
+              unit=""
+              tone={
+                totals.costValue < 0 ? "text-destructive" : "text-foreground"
+              }
+              note={t.statCostNote(totals.withoutCost)}
             />
           </div>
 
@@ -411,11 +483,12 @@ export default function StockHistoryPage() {
             </div>
 
             <div className="overflow-x-auto border-t border-border">
-              <table className="w-full min-w-150 border-collapse text-sm">
+              <table className="w-full min-w-190 border-collapse text-sm">
                 <colgroup>
                   <col className="w-40" />
                   <col />
                   <col className="w-44" />
+                  <col className="w-40" />
                   <col className="w-28" />
                   <col className="w-36" />
                   <col className="w-48" />
@@ -426,7 +499,9 @@ export default function StockHistoryPage() {
                       <th
                         key={heading}
                         className={`px-5 py-3 text-xs font-medium tracking-[0.05em] whitespace-nowrap text-muted-foreground uppercase ${
-                          index === 2 ? "text-right" : "text-left"
+                          index === 2 || index === 3
+                            ? "text-right"
+                            : "text-left"
                         }`}
                       >
                         {heading}
@@ -438,7 +513,7 @@ export default function StockHistoryPage() {
                   {rows.length === 0 && (
                     <tr>
                       <td
-                        colSpan={6}
+                        colSpan={7}
                         className="px-5 py-10 text-center text-muted-foreground"
                       >
                         {movementsQuery.isLoading
@@ -452,6 +527,7 @@ export default function StockHistoryPage() {
                   {rows.map((row) => {
                     const positive = row.quantityDelta >= 0;
                     const type = row.movementType;
+                    const cost = toCost(row.unitCost);
                     return (
                       <tr
                         key={row.id}
@@ -483,6 +559,23 @@ export default function StockHistoryPage() {
                           <span className="ml-1.5 font-mono text-[11px] text-muted-foreground">
                             ({row.quantityBefore} → {row.quantityAfter})
                           </span>
+                        </td>
+                        <td className="px-5 py-3.5 text-right whitespace-nowrap">
+                          {cost === null ? (
+                            <span className="font-mono text-[13px] text-muted-foreground">
+                              —
+                            </span>
+                          ) : (
+                            <>
+                              <span className="font-mono text-[13px]">
+                                {baht(cost, locale)}
+                              </span>
+                              <span className="ml-1.5 font-mono text-[11px] text-muted-foreground">
+                                ({baht(cost * Math.abs(row.quantityDelta), locale)}
+                                )
+                              </span>
+                            </>
+                          )}
                         </td>
                         <td className="px-5 py-3.5">
                           <Badge variant={TYPE_BADGE[type]}>

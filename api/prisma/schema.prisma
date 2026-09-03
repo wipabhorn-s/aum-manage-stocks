@@ -38,6 +38,10 @@ enum PendingActionSource {
 
 enum PendingActionIntent {
   ADJUST_STOCK
+  // [อั้ม] ขายผ่านแชท — ตัดสต็อกพร้อมคิดเงิน แยกจาก ADJUST_STOCK ที่ลดของเฉยๆ
+  SELL
+  // [อั้ม] ย้ายของไปร้านอื่นของเจ้าของคนเดียวกัน ปลายทางอยู่ที่ destinationShopId
+  TRANSFER_STOCK
 }
 
 enum StockOperation {
@@ -64,6 +68,15 @@ model StockMovement {
   quantityBefore  Int
   quantityAfter   Int
   source          StockMovementSource
+  /// [เซิ่น] ทุนต่อชิ้นของการเคลื่อนไหวครั้งนี้
+  ///
+  /// ของเข้า = ทุนของล็อตที่เพิ่งเปิด
+  /// ของออก = ทุนเฉลี่ยถ่วงน้ำหนักของล็อตที่ถูกตัดจริง (ดู StockLotsService.consume)
+  ///
+  /// nullable โดยตั้งใจ — รายการที่เกิดก่อนระบบล็อตไม่มีทุนให้บันทึก และ
+  /// หน้าเว็บต้องแสดงเป็น "—" ไม่ใช่ ฿0.00 เพราะไม่มีข้อมูลกับทุนเป็นศูนย์
+  /// เป็นคนละเรื่องกัน (หลักเดียวกับ shop_products.cost_price = 0)
+  unitCost        Decimal?            @map("unit_cost") @db.Decimal(12, 2)
   note            String?
   referenceType   String?
   referenceId     String?
@@ -84,28 +97,35 @@ model StockMovement {
 }
 
 model PendingAction {
-  id              String              @id @default(uuid()) @db.Uuid
-  shopId          String              @db.Uuid
-  actorId         String?             @db.Uuid
-  source          PendingActionSource
-  originalMessage String
-  intent          PendingActionIntent
-  shopProductId   String?             @db.Uuid
-  productQuery    String
-  operation       StockOperation
-  quantity        Int
-  status          PendingActionStatus @default(PENDING)
-  payload         Json?
-  parsedItems     Json?               @map("parsed_items")
-  expiresAt       DateTime
-  confirmedAt     DateTime?
-  cancelledAt     DateTime?
-  createdAt       DateTime            @default(now())
-  updatedAt       DateTime            @updatedAt
-  shop            Shop                @relation(fields: [shopId], references: [id], onDelete: Restrict)
-  shopProduct     ShopProduct?        @relation(fields: [shopProductId], references: [id], onDelete: Restrict)
-  actor           User?               @relation("PendingActionActor", fields: [actorId], references: [id], onDelete: Restrict)
-  stockMovements  StockMovement[]
+  id                String              @id @default(uuid()) @db.Uuid
+  shopId            String              @db.Uuid
+  actorId           String?             @db.Uuid
+  source            PendingActionSource
+  originalMessage   String
+  intent            PendingActionIntent
+  shopProductId     String?             @db.Uuid
+  productQuery      String
+  operation         StockOperation
+  quantity          Int
+  status            PendingActionStatus @default(PENDING)
+  payload           Json?
+  parsedItems       Json?               @map("parsed_items")
+  /// [อั้ม] ร้านปลายทางของ intent = TRANSFER_STOCK เท่านั้น intent อื่นเป็น null
+  ///
+  /// แยกเป็นคอลัมน์ ไม่ยัดลง payload เพราะ payload ถูกใช้เก็บรายการตัวเลือก
+  /// ตอนชื่อสินค้ากำกวมอยู่แล้ว (StockChoiceService) ถ้าเอามาปนกัน คำสั่งย้าย
+  /// ที่ชื่อสินค้ากำกวมจะทับกันเอง
+  destinationShopId String?             @map("destination_shop_id") @db.Uuid
+  expiresAt         DateTime
+  confirmedAt       DateTime?
+  cancelledAt       DateTime?
+  createdAt         DateTime            @default(now())
+  updatedAt         DateTime            @updatedAt
+  shop              Shop                @relation(fields: [shopId], references: [id], onDelete: Restrict)
+  destinationShop   Shop?               @relation("PendingActionDestination", fields: [destinationShopId], references: [id], onDelete: Restrict)
+  shopProduct       ShopProduct?        @relation(fields: [shopProductId], references: [id], onDelete: Restrict)
+  actor             User?               @relation("PendingActionActor", fields: [actorId], references: [id], onDelete: Restrict)
+  stockMovements    StockMovement[]
 
   @@index([shopId, status, createdAt(sort: Desc)])
   @@index([expiresAt, status])
@@ -254,13 +274,13 @@ model PasswordResetToken {
 /// จะ login ด้วยรหัสผ่านไม่ได้ (users.email_verified_at IS NULL)
 /// บัญชีที่สมัครด้วย Google ถือว่ายืนยันแล้วทันที เพราะ Google ยืนยันให้
 model EmailVerificationToken {
-  id        String    @id @default(uuid()) @db.Uuid
-  userId    String    @map("user_id") @db.Uuid
-  pendingEmail String? @map("pending_email")
-  tokenHash String    @unique @map("token_hash")
-  expiresAt DateTime  @map("expires_at") @db.Timestamptz(2)
-  usedAt    DateTime? @map("used_at") @db.Timestamptz(2)
-  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(2)
+  id           String    @id @default(uuid()) @db.Uuid
+  userId       String    @map("user_id") @db.Uuid
+  pendingEmail String?   @map("pending_email")
+  tokenHash    String    @unique @map("token_hash")
+  expiresAt    DateTime  @map("expires_at") @db.Timestamptz(2)
+  usedAt       DateTime? @map("used_at") @db.Timestamptz(2)
+  createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz(2)
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
@@ -409,7 +429,12 @@ enum PaymentPurpose {
 enum PaymentStatus {
   PENDING
   PAID
+  /// จ่ายไม่ผ่าน หรือใบหมดอายุแล้วถูก cron เก็บกวาด
   FAILED
+  /// ผู้ใช้กดยกเลิกใบที่ค้างอยู่เอง — แยกจาก FAILED เพราะผู้ใช้ต้องอ่านออกว่า
+  /// "เราเลิกเอง" ไม่ใช่ "บัตรมีปัญหา" และเป็นเงื่อนไขเดียวที่ปลดล็อกให้เปิด
+  /// ใบใหม่ได้ก่อนหมดหน้าต่าง 24 ชม.
+  CANCELLED
   REFUNDED
 }
 
@@ -460,6 +485,7 @@ model Shop {
   notifications     Notification[] // [เซิ่น] feature/notifications-resource
   chatMessages      ChatMessage[] // [อั้ม] feature/chatbot-resource — back-relation ที่ Prisma บังคับ
   chatShopPrompts   ChatShopPrompt[] // [อั้ม] feature/chatbot-resource — ร้านที่เลือกค้างไว้ใน LINE
+  incomingTransfers PendingAction[]    @relation("PendingActionDestination") // [อั้ม] ร้านนี้เป็นปลายทางของคำสั่งย้าย
   aiRecommendations AiRecommendation[] // [อั้ม] feature/ai-recommendations-resource
 
   @@index([ownerId, deletedAt], name: "idx_shop_owner")
@@ -579,11 +605,41 @@ model ShopProduct {
   pendingActions    PendingAction[]
   saleItems         SaleItem[]
   aiRecommendations AiRecommendation[] // [อั้ม] feature/ai-recommendations-resource
+  stockLots         StockLot[] // [เซิ่น] feature/stock-lots — ต้นทุนแยกตามล็อตที่รับเข้า
 
   @@unique([shopId, productId], map: "uq_shop_product")
   @@index([shopId, status], name: "idx_shop_product_shop_status")
   @@index([productId], name: "idx_shop_product_product")
   @@map("shop_products")
+}
+
+/// [เซิ่น] ล็อตสินค้าที่รับเข้าแต่ละครั้ง พร้อมต้นทุนของล็อตนั้น
+///
+/// เหตุผลที่ต้องมี: shop_products.cost_price เก็บได้ค่าเดียว พอรับของล็อตใหม่
+/// ที่ต้นทุนไม่เท่าเดิม ของเก่าที่ยังขายไม่หมดจะถูกตีเป็นราคาใหม่ไปด้วย
+/// กำไรของที่ยังไม่ได้ขายจึงคลาดเคลื่อนทันที ตารางนี้เก็บแต่ละล็อตแยกกัน
+/// แล้วตัดของเก่าก่อน (FIFO) ตามลำดับ received_at
+///
+/// qty_remaining ลดลงเมื่อของถูกตัดออก ล็อตที่เหลือ 0 ไม่ลบทิ้ง เก็บไว้เป็น
+/// ประวัติว่าเคยรับของราคานี้เข้ามาเมื่อไหร่ และ unit_cost ของบิลเก่าต้องตรวจย้อนได้
+///
+/// shop_products.cost_price ยังอยู่และยังใช้อยู่ — ทำหน้าที่เป็นค่าตั้งต้นของ
+/// ล็อตใหม่ที่ไม่ได้ระบุต้นทุนมา และเป็นค่าสำรองสำหรับสินค้าที่ยังไม่มีล็อต
+model StockLot {
+  id            String   @id @default(uuid(7)) @db.Uuid
+  shopProductId String   @map("shop_product_id") @db.Uuid
+  unitCost      Decimal  @map("unit_cost") @db.Decimal(12, 2)
+  qtyReceived   Int      @map("qty_received")
+  qtyRemaining  Int      @map("qty_remaining")
+  note          String?
+  receivedAt    DateTime @default(now()) @map("received_at") @db.Timestamptz(6)
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  shopProduct ShopProduct @relation(fields: [shopProductId], references: [id], onDelete: Restrict)
+
+  /// ตัดของเก่าก่อน — คิวรีหลักคือ "ล็อตของสินค้านี้ที่ยังเหลือ เรียงเก่าสุดก่อน"
+  @@index([shopProductId, receivedAt], name: "idx_stock_lot_fifo")
+  @@map("stock_lots")
 }
 
 // =====================================================================

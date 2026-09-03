@@ -99,6 +99,11 @@ const content = {
     confirmAdjust: "บันทึก",
     defaultAdjustNote: "ปรับจากหน้าสินค้า",
     negative: "ตัดออกมากกว่าของที่มีอยู่",
+    unitCostLabel: "ทุนต่อชิ้นของล็อตนี้ (ไม่บังคับ)",
+    unitCostPh: (n: string) => `ปล่อยว่าง = ใช้ทุนเดิม ${n}`,
+    unitCostHint:
+      "ถ้าล็อตนี้รับมาราคาไม่เท่าเดิม ใส่ทุนใหม่ไว้ ระบบจะเก็บแยกล็อตแล้วตัดของเก่าก่อนตอนขาย — ทุนของเก่าจะไม่ถูกตีเป็นราคาใหม่",
+    unitCostInvalid: "ทุนต้องไม่ติดลบ และมีทศนิยมไม่เกิน 2 ตำแหน่ง",
   },
   en: {
     sellTitle: "Record a sale",
@@ -132,9 +137,22 @@ const content = {
     confirmAdjust: "Save",
     defaultAdjustNote: "Adjusted from the products page",
     negative: "More than what is on hand",
+    unitCostLabel: "Unit cost for this batch (optional)",
+    unitCostPh: (n: string) => `Leave empty to keep ${n}`,
+    unitCostHint:
+      "If this batch cost a different amount, enter it here. It is stored as its own batch and older stock is sold first, so the old cost is not overwritten.",
+    unitCostInvalid: "Cost must be zero or more, with at most 2 decimals",
   },
 };
 
+
+/** เงินสองตำแหน่งเสมอ — ฿12 กับ ฿12.50 วางเรียงกันแล้วอ่านยากถ้าไม่เท่ากัน */
+function baht(value: number): string {
+  return `฿${value.toLocaleString(undefined, {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}`;
+}
 
 /* ------------------------------------------------------------------ ขายออก */
 
@@ -272,6 +290,7 @@ export function AdjustStockDialog({
 
   const [direction, setDirection] = useState<"INCREASE" | "DECREASE">("INCREASE");
   const [qty, setQty] = useState("1");
+  const [unitCost, setUnitCost] = useState("");
   const [note, setNote] = useState("");
   const [error, setError] = useState<ApiFailure | null>(null);
   const [saving, setSaving] = useState(false);
@@ -281,12 +300,34 @@ export function AdjustStockDialog({
     ? row.stockQty + (direction === "INCREASE" ? quantity : -quantity)
     : 0;
   const negative = resulting < 0;
+
+  /**
+   * ทุนกรอกได้เฉพาะตอนรับเข้า — ตอนตัดออกไม่มีความหมาย เพราะของที่ตัดออก
+   * ใช้ทุนของล็อตที่ถูกตัดจริง ไม่ใช่ตัวเลขที่ผู้ใช้พิมพ์
+   *
+   * เงื่อนไขตรงกับฝั่ง api (adjust-stock.dto.ts) — ไม่ติดลบ ทศนิยมไม่เกิน 2
+   * เช็คที่นี่ด้วยเพื่อบอกผู้ใช้ก่อนยิง ไม่ใช่ปล่อยให้ไปเจอ 400 กลับมา
+   */
+  const costTouched = direction === "INCREASE" && unitCost.trim() !== "";
+  const costValue = Number(unitCost);
+  const costInvalid =
+    costTouched &&
+    (!Number.isFinite(costValue) ||
+      costValue < 0 ||
+      !Number.isInteger(Math.round(costValue * 100)) ||
+      Math.round(costValue * 100) / 100 !== costValue);
+
   const canSubmit =
-    row !== null && Number.isInteger(quantity) && quantity > 0 && !negative;
+    row !== null &&
+    Number.isInteger(quantity) &&
+    quantity > 0 &&
+    !negative &&
+    !costInvalid;
 
   const close = () => {
     setDirection("INCREASE");
     setQty("1");
+    setUnitCost("");
     setNote("");
     setError(null);
     onClose();
@@ -302,6 +343,8 @@ export function AdjustStockDialog({
         operation: direction,
         quantity,
         note: note.trim() || t.defaultAdjustNote,
+        // ไม่ส่งฟิลด์นี้เลยเมื่อผู้ใช้ไม่ได้กรอก api จะใช้ทุนเดิมของสินค้าแทน
+        ...(costTouched ? { unitCost: costValue } : {}),
       });
       invalidateStockAndSales(queryClient);
       close();
@@ -369,6 +412,29 @@ export function AdjustStockDialog({
               : ""}
           </span>
         </div>
+
+        {direction === "INCREASE" && (
+          <div className="flex flex-col gap-1">
+            <span className="text-[10px] font-semibold tracking-[0.08em] text-muted-foreground uppercase">
+              {t.unitCostLabel}
+            </span>
+            <Input
+              type="number"
+              min={0}
+              step="0.01"
+              inputMode="decimal"
+              value={unitCost}
+              onChange={(event) => setUnitCost(event.target.value)}
+              placeholder={row ? t.unitCostPh(baht(Number(row.costPrice))) : ""}
+              className="text-right font-mono"
+            />
+            <span
+              className={`text-xs ${costInvalid ? "text-destructive" : "text-muted-foreground"}`}
+            >
+              {costInvalid ? t.unitCostInvalid : t.unitCostHint}
+            </span>
+          </div>
+        )}
 
         <div className="flex flex-col gap-1">
           <span className="text-[10px] font-semibold tracking-[0.08em] text-muted-foreground uppercase">

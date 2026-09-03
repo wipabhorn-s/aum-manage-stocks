@@ -128,6 +128,23 @@ export function useDeleteStaff() {
   });
 }
 
+/**
+ * เจ้าของร้าน "ยกเลิก" การผูก LINE ของพนักงานได้ แต่ผูกให้แทนไม่ได้
+ *
+ * การผูกต้องใช้ LINE OAuth ของเจ้าตัวเอง (POST /users/me/link-line) เจ้าของร้าน
+ * จึงทำแทนไม่ได้ตามหลักการ — พนักงานต้องเข้าสู่ระบบเองแล้วผูกที่หน้าโปรไฟล์
+ */
+export function useUnlinkStaffLine() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (staffId: string) =>
+      api.delete(`/api/backend/users/${staffId}/unlink-line`),
+    onSuccess: () =>
+      queryClient.invalidateQueries({ queryKey: staffKeys.all }),
+  });
+}
+
 export function useResetStaffPassword() {
   return useMutation({
     mutationFn: ({

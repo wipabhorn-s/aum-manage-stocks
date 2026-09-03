@@ -8,6 +8,7 @@ import {
 } from '@tanstack/react-query';
 
 import { api, withQuery } from '@/lib/api-client';
+import { staffKeys } from '@/lib/hooks/use-staff';
 
 export type Shop = {
   id: string;
@@ -70,6 +71,14 @@ export type StockMovement = {
   quantityDelta: number;
   quantityBefore: number;
   quantityAfter: number;
+  /**
+   * ทุนต่อชิ้นของการเคลื่อนไหวครั้งนี้ — เป็น string เพราะฝั่ง api เก็บเป็น Decimal
+   *
+   * null = รายการที่เกิดก่อนมีระบบล็อตต้นทุน ต้องแสดงเป็น "—" ไม่ใช่ ฿0.00
+   * เพราะ "ไม่มีข้อมูล" กับ "ทุนเป็นศูนย์" เป็นคนละเรื่องกัน (หลักเดียวกับที่
+   * แดชบอร์ดแยกนับ itemsWithoutCost)
+   */
+  unitCost: string | null;
   source: 'WEB' | 'LINE';
   note: string | null;
   createdAt: string;
@@ -232,7 +241,13 @@ export function useAddShopProduct(shopId: string | undefined) {
       costPrice: number;
       lowStockThreshold: number;
     }) => api.post(`/api/backend/shops/${shopId}/products`, input),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: inventoryKeys.all }),
+    /**
+     * เพิ่มสินค้าเข้าร้าน = สต็อกของร้านนั้นเปลี่ยน ต้องใช้ตัวล้างกลางเหมือน
+     * mutation อื่นที่แตะสต็อก — เดิมล้างแค่ inventoryKeys.all ซึ่งไม่แตะ
+     * ['catalog','shop-products',shopId] ที่หน้าแคตตาล็อกใช้อ่าน สินค้าที่เพิ่ง
+     * เพิ่มจึงไม่โผล่จนกว่าจะรีเฟรชหน้า (บั๊กแบบเดียวกับสิทธิ์พนักงาน)
+     */
+    onSuccess: () => invalidateStockAndSales(queryClient),
   });
 }
 
@@ -416,6 +431,8 @@ export type Payment = {
    * api ปฏิเสธไปแล้ว (หรือหายไปทั้งที่ยังจ่ายได้)
    */
   retryable: boolean;
+  /** ใบที่ยังค้างและยังไม่หมดอายุ — เป็นใบเดียวที่บล็อกการซื้อรอบใหม่ */
+  cancellable: boolean;
   subscription?: { plan?: { nameTh?: string } };
 };
 
@@ -423,6 +440,13 @@ export function usePayments() {
   return useQuery({
     queryKey: ['payments'],
     queryFn: () => api.get<Payment[]>('/api/backend/payments'),
+  });
+}
+
+export function useCancelPayment() {
+  return useMutation({
+    mutationFn: (paymentId: string) =>
+      api.post<{ message: string }>(`/api/backend/payments/${paymentId}/cancel`),
   });
 }
 
@@ -500,7 +524,21 @@ export function useSetStaffPermissions(shopId: string | undefined, staffId: stri
   return useMutation({
     mutationFn: (permissions: StaffPermission) =>
       api.put(`/api/backend/shops/${shopId}/staff/${staffId}/permissions`, permissions),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['staff', 'shop', shopId] }),
+    /**
+     * ต้องล้างทั้งซับทรี ['staff'] ไม่ใช่แค่ ['staff','shop',shopId]
+     *
+     * TanStack จับคู่ queryKey แบบ prefix ตามลำดับ — ['staff','shop',id] จึงไม่
+     * แตะ ['staff','permissions',shopId,staffId] ที่ useStaffPermissions ใน
+     * use-staff.ts ใช้อ่านค่า (ตำแหน่งที่ 2 คนละคำกัน) ผลคือหน้าจอสิทธิ์อ่าน
+     * ค่าเก่าจาก cache ต่อ สวิตช์เด้งกลับหลังกดบันทึกจนกว่าจะรีเฟรชทั้งหน้า
+     *
+     * PUT เขียนทับทั้งชุดอยู่แล้ว จึงเขียน cache ทับให้ทันทีก่อน เพื่อไม่ให้
+     * สวิตช์กระพริบกลับไปค่าเดิมระหว่างรอ refetch
+     */
+    onSuccess: (_data, permissions) => {
+      queryClient.setQueryData(staffKeys.permissions(shopId, staffId), permissions);
+      void queryClient.invalidateQueries({ queryKey: staffKeys.all });
+    },
   });
 }
 

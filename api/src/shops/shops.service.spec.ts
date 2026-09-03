@@ -37,6 +37,7 @@ describe('ShopsService pause/resume', () => {
     service = new ShopsService(
       prisma as unknown as PrismaService,
       subscriptionsService as never,
+      { emit: jest.fn() } as never,
     );
   });
 

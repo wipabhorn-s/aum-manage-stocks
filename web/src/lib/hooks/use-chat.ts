@@ -62,6 +62,38 @@ export type StockCandidate = {
  *
  * ฝั่ง LINE ทำเรื่องเดียวกันด้วยการพิมพ์หมายเลข เพราะกดปุ่มไม่ได้
  */
+export interface DestinationShop {
+  id: string;
+  name: string;
+}
+
+/**
+ * [อั้ม] เลือกร้านปลายทางของคำสั่งย้าย
+ *
+ * ใช้ endpoint เดียวกับการเลือกสินค้า เพราะเป็นการเติมข้อมูลให้รายการที่ค้างอยู่
+ * เหมือนกัน ต่างกันแค่ว่าเติมช่องไหน
+ */
+export function useSelectChatDestination(shopId: string | undefined) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: ({
+      pendingId,
+      destinationShopId,
+    }: {
+      pendingId: string;
+      destinationShopId: string;
+    }) =>
+      api.patch<{ reply: string }>(
+        `/api/backend/shops/${shopId}/chat/messages`,
+        { pendingActionId: pendingId, destinationShopId },
+      ),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['chat', shopId] });
+    },
+  });
+}
+
 export function useSelectChatCandidate(shopId: string | undefined) {
   const queryClient = useQueryClient();
 

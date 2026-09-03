@@ -20,6 +20,7 @@ import { LineReplyService } from './line-reply.service';
 import { LineUserMessageError } from './line-user-message.error';
 import { LINE_IDENTITY_PORT } from './ports/line-identity.port';
 import type { LineIdentityPort } from './ports/line-identity.port';
+import { ShopDestinationService } from '../chat-command/shop-destination.service';
 import { StockQueryService } from '../chat-command/stock-query.service';
 import { StockQueryRequestedError } from '../chat-command/stock-query-requested.error';
 import type { ShopSelectionRequired } from './ports/line-identity.port';
@@ -97,11 +98,14 @@ type ConfirmResult = {
 };
 
 const HELP_TEXT = [
-  'ผมช่วยปรับสต็อกสินค้าให้ได้ครับ พิมพ์เป็นภาษาพูดได้เลย',
+  'ผมช่วยจัดการสต็อก ขายของ และย้ายของระหว่างร้านให้ได้ครับ พิมพ์เป็นภาษาพูดได้เลย',
   '',
   'ตัวอย่าง',
   '• เพิ่มโค้ก 10',
   '• ลดน้ำเปล่า 5',
+  '• ขายโค้ก 2   (ตัดสต็อกพร้อมคิดเงิน)',
+  '• ย้ายโค้ก 10 ไปร้าน สาขาสอง',
+  '• สินค้าคงเหลือ',
   '',
   'ผมจะสรุปให้ดูก่อน แล้วพิมพ์ "ยืนยัน" เพื่อบันทึก หรือ "ยกเลิก" เพื่อยกเลิก',
 ].join('\n');
@@ -120,6 +124,8 @@ export class LineWebhookService {
     @Inject(STOCK_COMMAND_PARSER)
     private readonly parser: StockCommandParser,
     private readonly stockQuery: StockQueryService,
+    // [อั้ม] รายชื่อร้านปลายทางของคำสั่งย้าย
+    private readonly destinations: ShopDestinationService,
   ) {}
 
   async handle(rawBody: Buffer, signature: string | undefined) {
@@ -225,6 +231,16 @@ export class LineWebhookService {
 
       if (chosen) return chosen;
 
+      // ต้องอยู่หลังการเลือกสินค้าเสมอ — ดูเหตุผลใน trySelectDestination
+      const destination = await this.trySelectDestination(
+        shopId,
+        actorId,
+        normalized,
+        input.replyToken,
+      );
+
+      if (destination) return destination;
+
       let pending;
 
       try {
@@ -255,6 +271,19 @@ export class LineWebhookService {
           actorId,
           input.replyToken,
           this.renderChoices(pending),
+          pending.id,
+        );
+
+        return { pendingActionId: pending.id };
+      }
+
+      // ย้ายแต่ยังไม่รู้ปลายทาง — ถามก่อน ยังยืนยันไม่ได้
+      if (pending.intent === 'TRANSFER_STOCK' && !pending.destinationShopId) {
+        await this.respond(
+          shopId,
+          actorId,
+          input.replyToken,
+          await this.renderDestinationChoices(shopId, pending),
           pending.id,
         );
 
@@ -494,6 +523,18 @@ export class LineWebhookService {
       return { pendingActionId: pending.id };
     }
 
+    if (pending.intent === 'TRANSFER_STOCK' && !pending.destinationShopId) {
+      await this.respond(
+        shopId,
+        actorId,
+        replyToken,
+        await this.renderDestinationChoices(shopId, pending),
+        pending.id,
+      );
+
+      return { pendingActionId: pending.id };
+    }
+
     const result = await this.confirmPending(shopId, actorId, pending);
     await this.respond(
       shopId,
@@ -571,6 +612,8 @@ export class LineWebhookService {
   private async renderItems(
     shopId: string,
     pending: {
+      intent?: string;
+      destinationShopId?: string | null;
       productQuery: string | null;
       operation: 'INCREASE' | 'DECREASE';
       quantity: number;
@@ -599,6 +642,50 @@ export class LineWebhookService {
       : [];
     const names = new Map(rows.map((row) => [row.id, row.product.name]));
 
+    /**
+     * [อั้ม] ขายต้องเห็นยอดเงินก่อนกดยืนยัน ไม่งั้นผู้ใช้ยืนยันบิลที่ไม่รู้ราคา
+     *
+     * ราคาที่โชว์เป็นยอดประมาณการจาก sellPrice ปัจจุบัน ส่วนราคาที่ลงบิลจริง
+     * ถูก snapshot ตอน SalesService.create() ทำงาน ถ้ามีคนแก้ราคาระหว่างนั้น
+     * สองค่าจะต่างกันได้ — จึงบอกไว้ให้ชัดว่าเป็นยอดประมาณการ
+     */
+    if (pending.intent === 'SELL') {
+      const priced = ids.length
+        ? await this.prisma.shopProduct.findMany({
+            where: { id: { in: ids }, shopId },
+            select: { id: true, sellPrice: true },
+          })
+        : [];
+      const prices = new Map(priced.map((row) => [row.id, row.sellPrice]));
+      let total = 0;
+
+      const detail = items.map((item) => {
+        const label = names.get(item.shopProductId) ?? item.productQuery;
+        const unit = Number(prices.get(item.shopProductId) ?? 0);
+        const line = unit * item.quantity;
+        total += line;
+
+        return `• ${label} x${item.quantity} = ${line.toLocaleString()} บาท (${unit.toLocaleString()}/หน่วย)`;
+      });
+
+      return [...detail, `รวม ${total.toLocaleString()} บาท (ยอดประมาณการ)`];
+    }
+
+    if (pending.intent === 'TRANSFER_STOCK') {
+      const destination = pending.destinationShopId
+        ? await this.prisma.shop.findUnique({
+            where: { id: pending.destinationShopId },
+            select: { name: true },
+          })
+        : null;
+
+      return items.map((item) => {
+        const label = names.get(item.shopProductId) ?? item.productQuery;
+
+        return `• ย้าย ${label} ${item.quantity} ไปร้าน ${destination?.name ?? '-'}`;
+      });
+    }
+
     return items.map((item) => {
       const sign = item.operation === 'INCREASE' ? '+' : '-';
       const label = names.get(item.shopProductId) ?? item.productQuery;
@@ -623,8 +710,9 @@ export class LineWebhookService {
     // การตีความ — เกิดเฉพาะตอนชื่อกำกวมซึ่งไม่บ่อย จึงยอมเรียก LLM รอบที่สอง
     const parsed = await this.parser.parse(message);
 
-    // มาถึงตรงนี้ได้เฉพาะคำสั่งปรับสต็อก — คำถามยอดคงเหลือถูกดักตอบไปก่อนแล้ว
-    if (parsed.intent !== 'ADJUST_STOCK') {
+    // คำถามยอดคงเหลือถูกดักตอบไปก่อนแล้ว ส่วนคำสั่งย้ายไม่รับเข้าเส้นทางนี้
+    // เพราะแถวที่สร้างยังไม่มีร้านปลายทาง (ดูเหตุผลเต็มใน StockChoiceService)
+    if (parsed.intent === 'QUERY_STOCK') {
       throw new LineUserMessageError(
         'ตีความคำสั่งไม่สำเร็จ กรุณาลองใหม่อีกครั้ง',
       );
@@ -652,7 +740,8 @@ export class LineWebhookService {
         intent: parsed.intent,
         shopProductId: null,
         productQuery: parsed.productQuery,
-        operation: parsed.operation,
+        operation:
+          parsed.intent === 'ADJUST_STOCK' ? parsed.operation : 'DECREASE',
         quantity: parsed.quantity,
         expiresAt: new Date(Date.now() + ttl * 60_000),
         payload: { ...parsed, candidates, totalMatches },
@@ -770,6 +859,94 @@ export class LineWebhookService {
   }
 
   /** ตัวเลขล้วนจะถือเป็นการเลือก ก็ต่อเมื่อมีรายการรอเลือกค้างอยู่จริง */
+  /**
+   * [อั้ม] เมนูเลือกร้านปลายทาง — บอกร้านที่ยืนอยู่ตอนนี้ด้วยเสมอ
+   *
+   * บัญชีที่มีหลายสาขาจะเดาไม่ออกว่ากำลังย้ายของออกจากร้านไหน ถ้าไม่บอก
+   */
+  private async renderDestinationChoices(
+    shopId: string,
+    pending: { productQuery: string | null; quantity: number },
+  ): Promise<string> {
+    const { currentShopName, shops } =
+      await this.destinations.listOptions(shopId);
+
+    return [
+      `ตอนนี้อยู่ที่ร้าน ${currentShopName}`,
+      `จะย้าย ${pending.productQuery ?? ''} ${pending.quantity} ไปร้านไหนครับ`,
+      '',
+      ...shops.map((shop, index: number) => `${index + 1}. ${shop.name}`),
+      '',
+      'พิมพ์หมายเลขร้านปลายทาง',
+    ].join('\n');
+  }
+
+  /**
+   * [อั้ม] ตัวเลขบน LINE มีสามความหมาย — ตัวนี้คือความหมายที่สาม
+   *
+   *   1. ยังไม่ได้เลือกร้านที่จะทำงาน (ChatShopPrompt) → เลือกร้านที่จะทำงาน
+   *   2. pending ที่ shopProductId ว่าง → เลือกสินค้า (trySelectCandidate)
+   *   3. pending ย้ายที่ปลายทางว่าง → เลือกร้านปลายทาง (ตัวนี้)
+   *
+   * ข้อ 2 กับ 3 ตัดกันเองด้วย shopProductId จึงซ้อนทับกันไม่ได้ และต้องเรียก
+   * ตัวนี้ **หลัง** trySelectCandidate เสมอ เพื่อให้ลำดับความหมายคงที่
+   */
+  private async trySelectDestination(
+    shopId: string,
+    actorId: string,
+    normalized: string,
+    replyToken: string | undefined,
+  ): Promise<{ pendingActionId?: string } | null> {
+    if (!/^[0-9]+$/.test(normalized)) return null;
+
+    const pending = await this.findLatestPending(shopId, actorId);
+
+    if (
+      !pending ||
+      pending.intent !== 'TRANSFER_STOCK' ||
+      !pending.shopProductId ||
+      pending.destinationShopId
+    ) {
+      return null;
+    }
+
+    const { shops } = await this.destinations.listOptions(shopId);
+    const choice = shops[Number(normalized) - 1];
+
+    if (!choice) {
+      await this.respond(
+        shopId,
+        actorId,
+        replyToken,
+        `เลือกได้เฉพาะหมายเลข 1-${shops.length} ครับ`,
+        pending.id,
+      );
+
+      return { pendingActionId: pending.id };
+    }
+
+    await this.commands.update(shopId, pending.id, actorId, {
+      destinationShopId: choice.id,
+    });
+
+    await this.respond(
+      shopId,
+      actorId,
+      replyToken,
+      [
+        ...(await this.renderItems(shopId, {
+          ...pending,
+          destinationShopId: choice.id,
+        })),
+        '',
+        'พิมพ์ "ยืนยัน" เพื่อบันทึก หรือ "ยกเลิก" เพื่อยกเลิก',
+      ].join('\n'),
+      pending.id,
+    );
+
+    return { pendingActionId: pending.id };
+  }
+
   private async trySelectCandidate(
     shopId: string,
     actorId: string,

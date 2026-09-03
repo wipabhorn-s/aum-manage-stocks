@@ -49,14 +49,23 @@ export default function Sidebar({
       )}
       <aside
         className={cn(
-          "fixed inset-y-0 left-0 z-50 flex w-62.5 shrink-0 flex-col overflow-y-auto bg-brand-dark transition-transform duration-200 lg:static lg:z-auto lg:translate-x-0 lg:transition-none",
+          /*
+            บนมือถือกว้าง 288 ไม่ใช่ 250 — แถวหัวมี 3 อย่างเรียงกัน (โลโก้ +
+            ปุ่มสลับภาษา + กากบาทปิด) ซึ่งรวมแล้ว 269px ยัดใน 250 ไม่ลง เลยดัน
+            ให้เกิดแถบเลื่อนแนวนอนทั้งแผง ส่วนบนจอใหญ่กากบาทถูกซ่อน (lg:hidden)
+            250 จึงพอดีอยู่แล้ว
+            overflow-x-hidden ปิดท้ายไว้ด้วย: overflow-y-auto อย่างเดียวทำให้
+            แกน x กลายเป็น auto ตามสเปก CSS ของใหม่ที่ยาวเกินในอนาคตจะได้ตัด
+            ทิ้งแทนที่จะแอบสร้างแถบเลื่อนขึ้นมาอีก
+          */
+          "fixed inset-y-0 left-0 z-50 flex w-72 shrink-0 flex-col overflow-x-hidden overflow-y-auto bg-brand-dark transition-transform duration-200 lg:static lg:z-auto lg:w-62.5 lg:translate-x-0 lg:transition-none",
           isOpen ? "translate-x-0" : "-translate-x-full",
         )}
       >
         <div className="flex items-center gap-5 px-6 pt-7 pb-5">
           {/* โลโก้กลับหน้าแรกเสมอ ไม่ว่าจะอยู่หน้าไหนของแอป */}
-          <Link href="/" className="flex items-baseline gap-1.5">
-            <span className="font-heading text-xl font-bold tracking-[-0.02em] text-brand-orange">
+          <Link href="/" className="flex min-w-0 items-baseline gap-1.5">
+            <span className="truncate font-heading text-xl font-bold tracking-[-0.02em] text-brand-orange">
               AumStocks
             </span>
           </Link>

@@ -6,7 +6,6 @@ import TopBar from "@/components/layout/TopBar";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Alert, AlertDescription } from "@/components/ui/alert";
 import TableState from "@/components/shared/TableState";
 import AddAdminDialog from "@/components/features/admin/AddAdminDialog";
 import { useLocale } from "@/components/i18n/LocaleContext";
@@ -17,7 +16,6 @@ import type { AdminUser } from "@/lib/types/admin";
 const content = {
   th: {
     title: "จัดการ Admin",
-    bannerBody: "เมนูนี้เห็นได้เฉพาะ Super Admin — Admin ทั่วไปจะไม่เห็นเมนูนี้",
     intro:
       "Super Admin มีสิทธิ์เหมือน Admin และจัดการสิทธิ์ของ Admin คนอื่นเพิ่มเติม",
     addBtn: "เพิ่ม Admin",
@@ -34,8 +32,6 @@ const content = {
   },
   en: {
     title: "Manage Admins",
-    bannerBody:
-      "This menu is only visible to Super Admin — regular Admins won't see it.",
     intro:
       "Super Admin has all Admin rights plus the ability to manage other Admins' access.",
     addBtn: "Add admin",
@@ -76,12 +72,6 @@ export default function AdminManagePage() {
       <TopBar title={t.title} notifications={false} />
       <main className="flex-1 overflow-y-auto px-4 py-5 sm:px-6 lg:px-9 lg:py-8">
         <div className="flex flex-col gap-5">
-          <Alert variant="info">
-            <AlertDescription className="text-foreground/80">
-              {t.bannerBody}
-            </AlertDescription>
-          </Alert>
-
           <div className="flex flex-wrap items-center justify-between gap-3">
             <span className="text-sm text-muted-foreground">{t.intro}</span>
             <Button variant="dark" onClick={() => setAdding(true)}>

@@ -16,6 +16,7 @@ import type {
   ListChatMessagesQueryDto,
   SelectChatProductDto,
 } from './dto/chat.dto';
+import { ShopDestinationService } from '../chat-command/shop-destination.service';
 import { StockQueryService } from '../chat-command/stock-query.service';
 import { StockQueryRequestedError } from '../chat-command/stock-query-requested.error';
 
@@ -53,11 +54,14 @@ const pendingItemsSchema = z.array(pendingItemSchema).min(1);
 type PendingItem = z.infer<typeof pendingItemSchema>;
 
 const HELP_TEXT = [
-  'ผมช่วยปรับสต็อกสินค้าให้ได้ครับ พิมพ์เป็นภาษาพูดได้เลย',
+  'ผมช่วยจัดการสต็อก ขายของ และย้ายของระหว่างร้านให้ได้ครับ พิมพ์เป็นภาษาพูดได้เลย',
   '',
   'ตัวอย่าง',
   '• เพิ่มโค้ก 10',
   '• ลดน้ำเปล่า 5',
+  '• ขายโค้ก 2   (ตัดสต็อกพร้อมคิดเงิน)',
+  '• ย้ายโค้ก 10 ไปร้าน สาขาสอง',
+  '• สินค้าคงเหลือ',
   '',
   'ผมจะสรุปให้ดูก่อน แล้วกดยืนยันเพื่อบันทึก หรือกดยกเลิกได้',
 ].join('\n');
@@ -72,6 +76,8 @@ export class ChatService {
     private readonly chatCommand: ChatCommandService,
     private readonly stockChoice: StockChoiceService,
     private readonly stockQuery: StockQueryService,
+    // [อั้ม] รายชื่อร้านปลายทางของคำสั่งย้าย
+    private readonly destinations: ShopDestinationService,
   ) {}
 
   async listMessages(
@@ -138,7 +144,21 @@ export class ChatService {
         },
       });
 
-      return { pendingAction: pending, reply, candidates: [] };
+      /**
+       * [อั้ม] ย้ายแต่ยังไม่ได้บอกปลายทาง — ส่งรายชื่อร้านไปให้หน้าเว็บวาดปุ่ม
+       * ผู้ใช้จะได้ไม่ต้องจำชื่อร้านแล้วพิมพ์เอง
+       */
+      const destinationShops =
+        pending.intent === 'TRANSFER_STOCK' && !pending.destinationShopId
+          ? (await this.destinations.listOptions(shopId)).shops
+          : [];
+
+      return {
+        pendingAction: pending,
+        reply,
+        candidates: [],
+        destinationShops,
+      };
     } catch (error) {
       /**
        * [อั้ม] ถามยอดคงเหลือ ไม่ใช่สั่งแก้ — ตอบทันที ไม่ต้องยืนยัน
@@ -226,7 +246,9 @@ export class ChatService {
       shopId,
       dto.pendingActionId,
       ctx.userId,
-      { shopProductId: dto.shopProductId },
+      dto.shopProductId
+        ? { shopProductId: dto.shopProductId }
+        : { destinationShopId: dto.destinationShopId },
     );
 
     const reply = await this.buildSummary(shopId, pending);
@@ -242,7 +264,13 @@ export class ChatService {
       },
     });
 
-    return { pendingAction: pending, reply, candidates: [] };
+    // เลือกสินค้าเสร็จแล้วอาจยังเหลือขั้นเลือกร้านปลายทางอีกขั้น
+    const destinationShops =
+      pending.intent === 'TRANSFER_STOCK' && !pending.destinationShopId
+        ? (await this.destinations.listOptions(shopId)).shops
+        : [];
+
+    return { pendingAction: pending, reply, candidates: [], destinationShops };
   }
 
   /**
@@ -352,6 +380,8 @@ export class ChatService {
   private async buildSummary(
     shopId: string,
     pending: {
+      intent?: string;
+      destinationShopId?: string | null;
       productQuery: string;
       operation: 'INCREASE' | 'DECREASE';
       quantity: number;
@@ -365,12 +395,57 @@ export class ChatService {
       items.map((item) => item.shopProductId).filter(Boolean),
     );
 
-    const lines = items.map((item) => {
-      const sign = item.operation === 'INCREASE' ? '+' : '-';
-      const label = names.get(item.shopProductId) ?? item.productQuery;
+    /**
+     * [อั้ม] ขายต้องเห็นยอดเงินก่อนกดยืนยัน ไม่งั้นผู้ใช้ยืนยันบิลที่ไม่รู้ราคา
+     * ราคาที่โชว์เป็นยอดประมาณการ ของจริงถูก snapshot ตอน SalesService.create()
+     * (ข้อความต้องตรงกับฝั่ง LINE — ผู้ใช้คนเดียวกันสลับช่องทางไปมาได้)
+     */
+    let lines: string[];
 
-      return `• ${label} ${sign}${item.quantity}`;
-    });
+    if (pending.intent === 'SELL') {
+      const priced = await this.prisma.shopProduct.findMany({
+        where: {
+          id: { in: items.map((item) => item.shopProductId).filter(Boolean) },
+          shopId,
+        },
+        select: { id: true, sellPrice: true },
+      });
+      const prices = new Map(priced.map((row) => [row.id, row.sellPrice]));
+      let total = 0;
+
+      lines = items.map((item) => {
+        const label = names.get(item.shopProductId) ?? item.productQuery;
+        const unit = Number(prices.get(item.shopProductId) ?? 0);
+        const line = unit * item.quantity;
+        total += line;
+
+        return `• ${label} x${item.quantity} = ${line.toLocaleString()} บาท (${unit.toLocaleString()}/หน่วย)`;
+      });
+      lines.push(`รวม ${total.toLocaleString()} บาท (ยอดประมาณการ)`);
+    } else if (pending.intent === 'TRANSFER_STOCK') {
+      const destination = pending.destinationShopId
+        ? await this.prisma.shop.findUnique({
+            where: { id: pending.destinationShopId },
+            select: { name: true },
+          })
+        : null;
+
+      lines = items.map((item) => {
+        const label = names.get(item.shopProductId) ?? item.productQuery;
+
+        // ยังไม่เลือกปลายทาง — หน้าเว็บกำลังจะวาดปุ่มให้เลือกอยู่
+        return destination
+          ? `• ย้าย ${label} ${item.quantity} ไปร้าน ${destination.name}`
+          : `• ย้าย ${label} ${item.quantity} — เลือกร้านปลายทางด้านล่าง`;
+      });
+    } else {
+      lines = items.map((item) => {
+        const sign = item.operation === 'INCREASE' ? '+' : '-';
+        const label = names.get(item.shopProductId) ?? item.productQuery;
+
+        return `• ${label} ${sign}${item.quantity}`;
+      });
+    }
 
     return [...lines, '', 'กดยืนยันเพื่อบันทึก หรือกดยกเลิกเพื่อยกเลิก'].join(
       '\n',

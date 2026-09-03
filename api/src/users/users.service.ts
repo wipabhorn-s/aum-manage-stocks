@@ -161,6 +161,53 @@ export class UsersService {
   }
 
   /**
+   * บัญชีที่ถือครองอีเมลนี้อยู่ — ใช้ตอน Google ส่งอีเมลที่ยืนยันแล้วกลับมา
+   *
+   * ไม่กรอง emailVerifiedAt เพราะทั้งบัญชีที่ยืนยันแล้วและยังไม่ยืนยันต่างก็จอง
+   * อีเมลนี้ไว้ใน uq_users_email_active เหมือนกัน ถ้าไม่หาให้เจอทั้งสองแบบ
+   * createGoogleUser() จะไปชน unique index แล้วพัง
+   *
+   * SHOP_STAFF ถูกตัดออกด้วยเหตุผลเดียวกับ findByEmailForReset() — บัญชี
+   * พนักงานถูกสร้างโดยเจ้าของร้าน ไม่ใช่เส้นทางที่ล็อกอินเองด้วย OAuth
+   */
+  findOwnerByEmail(email: string) {
+    return this.prisma.user.findFirst({
+      where: {
+        email: email.toLowerCase(),
+        role: { not: 'SHOP_STAFF' },
+        deletedAt: null,
+      },
+    });
+  }
+
+  /**
+   * ผูก Google เข้ากับบัญชีที่มีอีเมลเดียวกันอยู่แล้ว
+   *
+   * Google ส่งอีเมลกลับมาเฉพาะเมื่อ email_verified = true (ดู
+   * google-auth.service.ts) การล็อกอินผ่านสำเร็จจึงพิสูจน์แล้วว่าคนที่กดเป็น
+   * เจ้าของอีเมลนั้นจริง — แข็งแรงกว่าการกดลิงก์ในเมลด้วยซ้ำ
+   *
+   * **ล้างรหัสผ่านทิ้งเมื่อบัญชีเดิมยังไม่ยืนยันอีเมล** — บัญชีที่ยังไม่ยืนยัน
+   * อาจถูกสมัครทิ้งไว้ด้วยอีเมลของคนอื่น (ระบบไม่ได้ตรวจก่อนสร้าง) ถ้าผูกเฉยๆ
+   * รหัสผ่านของคนที่สมัครทิ้งไว้จะยังใช้เข้าบัญชีของเจ้าของตัวจริงได้ตลอด
+   * เจ้าของตัวจริงตั้งรหัสใหม่เองได้ที่ forgot-password และบัญชี OAuth มี
+   * password = NULL ได้อยู่แล้วตาม SRS §89
+   */
+  async linkGoogleAccount(userId: string, googleId: string) {
+    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+    const wasUnverified = user?.emailVerifiedAt === null;
+
+    return this.prisma.user.update({
+      where: { id: userId },
+      data: {
+        googleId,
+        emailVerifiedAt: user?.emailVerifiedAt ?? new Date(),
+        ...(wasUnverified ? { password: null } : {}),
+      },
+    });
+  }
+
+  /**
    * SRS §85 — สมัครด้วย Google ต้องบันทึก email จาก Google ทันที
    * และถือว่ายืนยันอีเมลแล้ว เพราะ Google ยืนยันให้ (เช็ค email_verified มาแล้ว)
    */
@@ -482,11 +529,28 @@ export class UsersService {
   async deleteStaff(ownerId: string, staffId: string) {
     const staff = await this.findOwnedStaff(ownerId, staffId);
 
-    // soft delete — staff quota คืนอัตโนมัติเพราะ quota นับจาก deletedAt IS NULL
+    /**
+     * soft delete — staff quota คืนอัตโนมัติเพราะ quota นับจาก deletedAt IS NULL
+     *
+     * **ต้องล้าง lineUserId/googleId ทิ้งด้วย** ไม่ใช่เก็บค้างไว้บนแถวที่ตายแล้ว:
+     *
+     * `lineUserId` เป็น @unique ที่ไม่ได้กรอง deletedAt (ต่างจาก uq_users_email_active
+     * ของอีเมลที่เป็น partial index) ถ้าไม่ล้าง อดีตพนักงานที่กดล็อกอินด้วย LINE
+     * จะเข้าเส้นทางนี้: findByLineId() กรอง deletedAt: null → หาไม่เจอ →
+     * createLineUser() → INSERT ชน unique → P2002 → ผู้ใช้เห็น error 500 ดิบๆ
+     * โดยไม่มีอะไรบอกว่าเกิดอะไรขึ้น
+     *
+     * ที่อันตรายกว่าคือมันกันได้เพราะ constraint บังเอิญชน ไม่ใช่เพราะมีใครตรวจ
+     * วันไหนมีคนเปลี่ยน @unique เป็น partial index ให้เหมือนอีเมล เส้นทางเดิมจะ
+     * กลายเป็น "สร้างบัญชีเจ้าของร้านใหม่ให้อดีตพนักงานเงียบๆ" ทันที
+     *
+     * ล้างทิ้งแล้วตัวตน LINE/Google จะถูกคืนให้เจ้าตัวไปใช้สมัครใหม่เองได้ตามปกติ
+     * (ได้บัญชีใหม่แพ็กเกจ Free ซึ่งเข้าถึงร้านเดิมไม่ได้อยู่แล้ว)
+     */
     await this.prisma.$transaction([
       this.prisma.user.update({
         where: { id: staff.id },
-        data: { deletedAt: new Date() },
+        data: { deletedAt: new Date(), lineUserId: null, googleId: null },
       }),
       this.prisma.refreshToken.updateMany({
         where: { userId: staff.id, revokedAt: null },

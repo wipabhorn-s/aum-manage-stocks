@@ -9,6 +9,10 @@ import { Prisma } from '../database/generated/prisma/client';
 import { UserRole } from '../database/generated/prisma/enums';
 import { PrismaService } from '../database/prisma.service';
 import {
+  NOTIFICATION_TYPE,
+  NotificationsService,
+} from '../notifications/notifications.service';
+import {
   calculateShopQuota,
   isSubscriptionReadOnly,
 } from '../subscriptions/subscription-quota.util';
@@ -20,6 +24,7 @@ export class ShopsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly subscriptionsService: SubscriptionsService,
+    private readonly notifications: NotificationsService,
   ) {}
 
   // TODO(staff-resource): พนักงานควรเห็นเฉพาะร้านที่ตัวเองถูกมอบหมาย ผ่าน
@@ -46,39 +51,84 @@ export class ShopsService {
         expiresAt: subscription.expiresAt,
       })
     ) {
-      throw new ForbiddenException(
-        'Account is in read-only mode because the subscription has expired. Please renew first.',
-      );
+      throw new ForbiddenException({
+        message:
+          'แพ็กเกจหมดอายุแล้ว ร้านค้าอยู่ในโหมดอ่านอย่างเดียว กรุณาต่ออายุสมาชิกเพื่อแก้ไขข้อมูล',
+        code: 'SUBSCRIPTION_READ_ONLY',
+      });
     }
 
     // นับแล้วสร้างต้องอยู่ในทรานแซกชันเดียวกัน ไม่งั้นสองรีเควสต์ที่ยิงพร้อมกัน
     // จะนับได้เท่ากันแล้วผ่านทั้งคู่ — เท่ากับสร้างร้านเกินโควตาที่จ่ายเงินมา
     // Serializable ให้ Postgres จับ read-write conflict นี้เอง (แบบเดียวกับ
     // StockService.adjust) ฝั่งที่แพ้จะได้ error แล้วผู้ใช้กดใหม่ได้
-    return this.prisma.$transaction(
-      async (tx) => {
-        const usedShopCount = await tx.shop.count({
-          where: { ownerId: userId, deletedAt: null },
-        });
+    try {
+      return await this.prisma.$transaction(
+        async (tx) => {
+          const usedShopCount = await tx.shop.count({
+            where: { ownerId: userId, deletedAt: null },
+          });
 
-        const quota = calculateShopQuota({
-          status: subscription.status,
-          includedShopQuota: subscription.plan.includedShopQuota,
-          usedShopCount,
-        });
+          const quota = calculateShopQuota({
+            status: subscription.status,
+            includedShopQuota: subscription.plan.includedShopQuota,
+            usedShopCount,
+          });
 
-        if (!quota.canCreateShop) {
-          throw new ForbiddenException(
-            'Cannot create a new shop: shop quota is used up or the subscription is not active. Upgrade your plan to get more quota.',
-          );
-        }
+          if (!quota.canCreateShop) {
+            throw new ForbiddenException({
+              message: `จำนวนร้านถึงขีดจำกัดของแพ็กเกจแล้ว (${quota.allowed} ร้าน) กรุณาอัปเกรดแพ็กเกจเพื่อเพิ่มร้าน`,
+              code: 'SHOP_QUOTA_EXCEEDED',
+              limit: quota.allowed,
+              used: quota.used,
+            });
+          }
 
-        return tx.shop.create({
-          data: { ...dto, ownerId: userId },
+          return tx.shop.create({
+            data: { ...dto, ownerId: userId },
+          });
+        },
+        { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+      );
+    } catch (error) {
+      /**
+       * แจ้งเตือนนอกทรานแซกชัน เพราะการโยน error ทำให้ทรานแซกชัน rollback
+       * ถ้ายิงข้างในการแจ้งเตือนจะหายไปพร้อมกับมัน
+       *
+       * ทำให้เท่ากับโควตาสินค้าใน ProductsService.assertQuotaAvailable() ที่ยิง
+       * PRODUCT_LIMIT_REACHED มาตั้งแต่แรก — ก่อนหน้านี้ฝั่งร้านไม่ยิงอะไรเลย
+       * ทั้งที่ SHOP_LIMIT_REACHED มีอยู่ใน enum และหน้าเว็บรอรับอยู่แล้ว
+       */
+      const exceeded = this.shopQuotaExceeded(error);
+      if (exceeded) {
+        await this.notifications.emit({
+          userId,
+          type: NOTIFICATION_TYPE.SHOP_LIMIT_REACHED,
+          title: 'จำนวนร้านเต็มโควตาแพ็กเกจแล้ว',
+          message: `ตอนนี้มีร้านที่เปิดอยู่ ${exceeded.used} จาก ${exceeded.limit} ร้าน อัปเกรดแพ็กเกจเพื่อเพิ่มร้านได้อีก`,
+          payload: { limit: exceeded.limit, used: exceeded.used },
+          dedupeWhileUnread: true,
         });
-      },
-      { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
-    );
+      }
+      throw error;
+    }
+  }
+
+  /** อ่านตัวเลขโควตาจาก error ที่ create() โยนเอง ไม่ใช่ error อื่นที่ผ่านมา */
+  private shopQuotaExceeded(
+    error: unknown,
+  ): { limit: number; used: number } | null {
+    if (!(error instanceof ForbiddenException)) return null;
+
+    const body: unknown = error.getResponse();
+    if (typeof body !== 'object' || body === null) return null;
+
+    const record = body as Record<string, unknown>;
+    if (record.code !== 'SHOP_QUOTA_EXCEEDED') return null;
+    if (typeof record.limit !== 'number') return null;
+    if (typeof record.used !== 'number') return null;
+
+    return { limit: record.limit, used: record.used };
   }
 
   async update(userId: string, shopId: string, dto: UpdateShopDto) {
@@ -197,9 +247,11 @@ export class ShopsService {
         expiresAt: subscription.expiresAt,
       })
     ) {
-      throw new ForbiddenException(
-        'Account is in read-only mode because the subscription has expired. Please renew first.',
-      );
+      throw new ForbiddenException({
+        message:
+          'แพ็กเกจหมดอายุแล้ว ร้านค้าอยู่ในโหมดอ่านอย่างเดียว กรุณาต่ออายุสมาชิกเพื่อแก้ไขข้อมูล',
+        code: 'SUBSCRIPTION_READ_ONLY',
+      });
     }
   }
 }

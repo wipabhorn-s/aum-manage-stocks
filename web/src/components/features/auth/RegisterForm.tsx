@@ -29,6 +29,9 @@ export default function RegisterForm() {
   ] as const;
   const [formError, setFormError] = useState<string | null>(null);
   const [sentTo, setSentTo] = useState<string | null>(null);
+  // api บอกมาว่าสร้างบัญชีสำเร็จแต่ส่งเมลไม่ออก — ต้องบอกผู้ใช้ ไม่งั้นเขาจะนั่งรอ
+  // เมลที่ไม่มีวันมา แล้วเข้าใจว่าสมัครไม่ผ่านจนไปสมัครซ้ำ
+  const [mailFailed, setMailFailed] = useState(false);
 
   const {
     register,
@@ -60,20 +63,30 @@ export default function RegisterForm() {
 
     // ยังเข้าสู่ระบบไม่ได้จนกว่าจะกดลิงก์ยืนยันในอีเมล (SRS §111 ฝั่ง api
     // บล็อก login ของบัญชีที่ยังไม่ยืนยัน) จึงไม่พาไปหน้าอื่นให้สับสน
+    setMailFailed(result?.emailSent === false);
     setSentTo(values.email);
   };
 
   if (sentTo) {
     return (
       <div className="flex flex-col gap-4">
-        <Alert variant="info">
-          <AlertDescription className="text-foreground/80">
-            {text.sentTitle} <strong>{sentTo}</strong>{text.sentBody}
+        <Alert variant={mailFailed ? "destructive" : "info"}>
+          <AlertDescription className={mailFailed ? undefined : "text-foreground/80"}>
+            {mailFailed ? (
+              <>
+                {text.sentFailedTitle} <strong>{sentTo}</strong>{" "}
+                {text.sentFailedBody}
+              </>
+            ) : (
+              <>
+                {text.sentTitle} <strong>{sentTo}</strong>{text.sentBody}
+              </>
+            )}
           </AlertDescription>
         </Alert>
 
         <p className="text-[13px] text-muted-foreground">
-          {text.sentHint}
+          {mailFailed ? text.sentFailedHint : text.sentHint}
         </p>
 
         <Link href="/login">

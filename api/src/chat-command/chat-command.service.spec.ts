@@ -22,6 +22,9 @@ describe('ChatCommandService', () => {
       { get: jest.fn() } as never,
       {} as never,
       { notifyIfCrossed: jest.fn() } as never,
+      // [อั้ม] ขาย/ย้าย — เทสต์ชุดนี้ไม่ได้แตะสองเส้นทางนั้น ใส่ตัวหลอกไว้พอ
+      {} as never,
+      {} as never,
       parser,
       { resolveProduct: jest.fn() } as never,
       authorization as never,
@@ -65,6 +68,8 @@ describe('ChatCommandService', () => {
           persisted = { id: pendingId, status: 'PENDING', ...data };
           return Promise.resolve(persisted);
         }),
+        // confirm() อ่าน intent ก่อนเข้าทรานแซกชัน เพื่อแยกเส้นทาง ขาย/ย้าย/ปรับสต็อก
+        findFirst: jest.fn(() => Promise.resolve(persisted)),
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
       },
     };
@@ -108,6 +113,9 @@ describe('ChatCommandService', () => {
       { get: jest.fn().mockReturnValue(15) } as never,
       stock as never,
       { notifyIfCrossed } as never,
+      // [อั้ม] ขาย/ย้าย — เทสต์ชุดนี้ไม่ได้แตะสองเส้นทางนั้น ใส่ตัวหลอกไว้พอ
+      {} as never,
+      {} as never,
       parser,
       inventory as never,
       { assertCanUseChatbot: jest.fn().mockResolvedValue(undefined) } as never,
