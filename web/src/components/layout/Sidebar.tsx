@@ -62,7 +62,13 @@ export default function Sidebar({
           isOpen ? "translate-x-0" : "-translate-x-full",
         )}
       >
-        <div className="flex items-center gap-5 px-6 pt-7 pb-5">
+        {/*
+          gap-3 + px-4 ไม่ใช่ gap-5 + px-6 — บนจอใหญ่แผงกว้าง 250 หัก px-6
+          สองข้างเหลือ 202px แต่โลโก้ (~112) + gap 20 + ปุ่มสลับภาษา (w-20 = 80)
+          ต้องการ 212px ชื่อ AumStocks เลยโดน truncate เหลือ "AumSto..."
+          ลดลงมาแล้วเหลือที่ว่าง 218px พอใส่ครบทั้งสามชิ้นโดยไม่ต้องตัดคำ
+        */}
+        <div className="flex items-center gap-3 px-4 pt-7 pb-5">
           {/* โลโก้กลับหน้าแรกเสมอ ไม่ว่าจะอยู่หน้าไหนของแอป */}
           <Link href="/" className="flex min-w-0 items-baseline gap-1.5">
             <span className="truncate font-heading text-xl font-bold tracking-[-0.02em] text-brand-orange">

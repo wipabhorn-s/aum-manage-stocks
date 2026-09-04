@@ -1,7 +1,6 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import Link from "next/link";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 
 import TopBar from "@/components/layout/TopBar";
@@ -71,7 +70,6 @@ const content = {
     allCategories: "ทุกหมวดหมู่",
     manageCategories: "จัดการหมวดหมู่",
     noCategory: "ไม่ระบุหมวดหมู่",
-    addBtn: "เพิ่มสินค้าใหม่ →",
     quickLabel: "ค้นหาด่วน:",
     clearSearch: "ล้างการค้นหา",
     columns: ["สินค้า", "หมวดหมู่", "บาร์โค้ด", "ราคาขาย", "คงเหลือ", "สถานะ", "จัดการสต็อก", ""],
@@ -138,7 +136,6 @@ const content = {
     allCategories: "All categories",
     manageCategories: "Manage categories",
     noCategory: "Uncategorised",
-    addBtn: "Add new product →",
     quickLabel: "Quick search:",
     clearSearch: "Clear search",
     columns: ["Product", "Category", "Barcode", "Sell price", "Stock", "Status", "Stock actions", ""],
@@ -321,9 +318,6 @@ export default function ProductsStockPage() {
             >
               {t.manageCategories}
             </Button>
-            <Button variant="dark" render={<Link href="/catalog/new" />}>
-              {t.addBtn}
-            </Button>
           </div>
 
           {(quickChips.length > 0 || search) && (
@@ -356,12 +350,19 @@ export default function ProductsStockPage() {
           )}
 
           <Card className="overflow-x-auto p-0">
-            <table className="w-full min-w-200 table-fixed border-collapse text-sm">
+            <table className="w-full min-w-350 table-fixed border-collapse text-sm">
               {/*
                 กำหนดความกว้างคอลัมน์ตายตัว + table-fixed
                 ไม่งั้นเบราว์เซอร์จะเกลี่ยความกว้างตามเนื้อหาของแถวที่มีอยู่
                 พอมีสินค้าแค่ตัวเดียว หัวตารางกับค่าข้างล่างจะเหลื่อมกันทันที
                 คอลัมน์แรกไม่กำหนด = กินพื้นที่ที่เหลือทั้งหมด
+
+                min-w ต้องมากกว่าผลรวมของคอลัมน์ตายตัว ไม่งั้นทุกคอลัมน์จะถูกบีบ
+                ตามสัดส่วน แล้วชื่อสินค้าจะเหลือแทบศูนย์ (เดิม min-w-200 = 800px
+                ซึ่งน้อยกว่าผลรวม จึงโดนบีบทุกแถว)
+
+                40+44+28+52+28+64+20 = 276 (1104px) + เผื่อชื่อสินค้า 74 (296px) = 350
+                แก้ความกว้างคอลัมน์ไหนก็ต้องมาบวกใหม่ที่นี่ด้วย
               */}
               <colgroup>
                 <col />

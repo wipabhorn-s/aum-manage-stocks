@@ -31,6 +31,7 @@ import { ConfirmDialog } from "@/components/shared/ConfirmDialog";
 import { useLocale } from "@/components/i18n/LocaleContext";
 import { CategoryManagerDialog } from "@/components/shared/CategoryManagerDialog";
 import { ProductScopeTabs } from "@/components/shared/ProductScopeTabs";
+import AddProductDialog from "@/components/features/catalog/AddProductDialog";
 import { ShopStockDialog } from "@/components/features/catalog/ShopStockDialog";
 import { ApiError, api, withQuery } from "@/lib/api-client";
 import {
@@ -178,6 +179,7 @@ export default function ProductCatalogPage() {
   const [search, setSearch] = useState("");
   const [categoryFilter, setCategoryFilter] = useState("all");
   const [categoryManagerOpen, setCategoryManagerOpen] = useState(false);
+  const [addOpen, setAddOpen] = useState(false);
   const [stockFor, setStockFor] = useState<{
     id: string;
     name: string;
@@ -359,13 +361,21 @@ export default function ProductCatalogPage() {
             >
               {t.manageCategories}
             </Button>
-            <Button variant="dark" render={<Link href="/catalog/new" />}>
+            <Button variant="dark" onClick={() => setAddOpen(true)}>
               {t.addBtn}
             </Button>
           </div>
 
           <Card className="overflow-x-auto p-0">
-            <table className="w-full min-w-200 table-fixed border-collapse text-sm">
+            {/*
+              min-w ต้องมากกว่าผลรวมของคอลัมน์ที่กำหนดความกว้างตายตัว มิฉะนั้น
+              table-fixed จะบีบทุกคอลัมน์ลงตามสัดส่วน แล้วคอลัมน์แรกที่ไม่ได้
+              กำหนดความกว้าง (ชื่อสินค้า) จะเหลือแทบศูนย์ — ชื่อกลายเป็น "น้ำ."
+
+              44+44+28+72+56 = 244 (976px) + เผื่อชื่อสินค้าอีก 76 (304px) = 320
+              แก้ความกว้างคอลัมน์ไหนก็ต้องมาบวกใหม่ที่นี่ด้วย
+            */}
+            <table className="w-full min-w-320 table-fixed border-collapse text-sm">
               <colgroup>
                 <col />
                 <col className="w-44" />
@@ -542,6 +552,9 @@ export default function ProductCatalogPage() {
         shops={shops}
         onClose={() => setStockFor(null)}
       />
+
+      {/* [อั้ม] สร้างสินค้าได้จากที่นี่ที่เดียว — หน้าร้านรายสาขาไม่มีปุ่มนี้แล้ว */}
+      <AddProductDialog open={addOpen} onOpenChange={setAddOpen} />
 
       <CategoryManagerDialog
         open={categoryManagerOpen}
