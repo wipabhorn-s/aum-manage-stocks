@@ -539,11 +539,9 @@ A five-person team project. Work was split by module, one feature branch each:
 | Member | Modules |
 | --- | --- |
 | แพรว | Auth, Users, Admin, Payments |
-| พี่ปาน | Subscriptions, Shops |
-| อั้ม | Staff, Categories |
-| เซิ่น | Products, Shop products |
-| พี่ดิว | Stock movements, Sales |
+| พี่ปาน | Subscriptions, Shops, image upload (Cloudinary) |
+| อั้ม | Staff, Categories, AI chatbot (web + LINE bot), AI recommendations, deployment (Railway + Vercel) |
+| เซิ่น | Products, Shop products, Notifications, lot-based cost, Dashboard |
+| พี่ดิว | Stock movements (adjust / transfer / history), Sales (POS) |
 
-Later modules, by the same split: chatbot, LINE and AI recommendations (อั้ม),
-notifications and lot-based cost (เซิ่น), stock adjust / transfer (พี่ดิว).
 Team rules (git workflow, ownership, business rules) live in [`AGENTS.md`](AGENTS.md).

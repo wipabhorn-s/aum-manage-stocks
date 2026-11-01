@@ -161,10 +161,10 @@ Branch naming: `feature/<resource>-resource`.
 | อั้ม | `feature/ai-recommendations-resource` | `AiRecommendationsModule` (+ Socket.io gateway) |
 | เซิ่น | `feature/notifications-resource` | `NotificationsModule` |
 | เซิ่น | `feature/stock-lots` | lot-based cost (`stock_lots`, FIFO) |
-| **ยังไม่ระบุ** (เขียนโดย git `zernpany-fs`) | `feature/dashboard-resource` | `DashboardModule` |
-| **ยังไม่ระบุ** (เขียนโดย git `Parnellye`) | — | `UploadsModule` (Cloudinary image upload) |
+| เซิ่น | `feature/dashboard-resource` | `DashboardModule` |
+| พี่ปาน | `feature/shops-resource` | `UploadsModule` (Cloudinary image upload, built with the shop form) |
 
-Every module above is implemented. Owners for chatbot, AI recommendations, notifications and stock lots come from the `[ชื่อ]` tags in `schema.prisma` and the git history. `DashboardModule` and `UploadsModule` have **no agreed owner** — confirm one so someone answers for their bugs.
+Every module above is implemented. Owners for the later modules come from the `[ชื่อ]` tags in `schema.prisma` and the git history, confirmed by the team.
 
 **The per-endpoint detail lives in `aum-manage-stocks.xlsx` (sheet `endpoint`), not here** — 98 rows of method/path/body/note that change as work progresses. Read that sheet before implementing an endpoint; treat it as the API contract and this table as the ownership map. Don't copy the endpoint list into this file — a stale copy is worse than no copy.
 
