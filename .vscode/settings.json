@@ -1,0 +1,14 @@
+{
+  // ปิดคำแนะนำ "tracking-[0.05em] can be written as tracking-wider" ของ
+  // extension Tailwind CSS IntelliSense
+  //
+  // ธีมของโปรเจกต์แมตช์กับไฟล์ Figma (ดู AGENTS.md > Design system) ค่า
+  // letter-spacing จึงถูกเขียนเป็นค่าดิบตามที่ export มา ทั้ง web/src ใช้แบบนี้
+  // อยู่ 87 จุด (tracking-[0.08em] 32, tracking-[0.12em] 29, tracking-[0.05em] 13, ...)
+  // เทียบกับ utility แบบมีชื่อเพียง 7 จุด
+  //
+  // การไล่แก้ทีละจุดให้เป็นชื่อ canonical จะทำให้ค่าที่ไม่มี utility ตรงกัน
+  // (เช่น 0.08em, 0.12em, 0.18em) ยังเป็นค่าดิบอยู่ดี = ปนกันสองแบบในไฟล์เดียว
+  // จึงเลือกคงค่าดิบทั้งหมดแล้วปิดคำแนะนำนี้แทน
+  "tailwindCSS.lint.suggestCanonicalClasses": "ignore"
+}

@@ -1,125 +1,102 @@
 // =====================================================================
 // Aum Manage Stocks — Retail Shop Stock Management Platform
 // DBML for dbdiagram.io  (https://dbdiagram.io/d)
-// Source: SRS - Aum Manage Stocks.docx (ground truth)
 //
-// Reviewed against SRS on 2026-08-20. Changes from the original draft:
-//   1) REMOVED extra-shop purchase (EXTRA_SHOP payment purpose,
-//      extra_shop_quota, extra_shop_price_thb) — SRS §63/§110 states
-//      plans can only be upgraded, never topped up separately:
-//      "อัปเกรดแพ็กเกจได้แต่ไม่สามารถซื้อสิทธิ์เพิ่มแยกได้"
-//   2) subscription_plans now models the real 3-tier structure
-//      (Free / Plus / Pro) from SRS §57-59, incl. staff_quota per plan
-//      and explicit feature-gate booleans (chatbot/barcode/AI), since
-//      SRS gates AI Chat to Plus+Pro but AI Recommendations to Pro only.
-//   3) products stays a central catalog per owner; shop_products is the
-//      join table carrying per-shop price/stock (SRS §14, §148).
-//   4) staff_permissions uses boolean columns, one row per shop_staff
-//      (SRS §138 lists a fixed set of 6 permissions).
-//   5) two_factor_recovery_codes note corrected — SRS DOES specify 2FA
-//      in detail (§39-40, §100-105); it is not a gap.
-// NOTE: DBML doesn't support CHECK constraints or partial indexes.
-//       Those are written in each table's Note and must be implemented
-//       for real in the Prisma migration SQL.
+// Generated from api/prisma/schema.prisma on 2026-11-02 — schema.prisma is
+// what the database really uses, so table, column and enum names here are
+// the real ones. Four models have no @@map (StockMovement, Sale, SaleItem,
+// PendingAction), so their tables and columns keep Prisma's PascalCase /
+// camelCase names.
+//
+// Notes carried over from the earlier hand-written design file where the
+// column still exists. Requirements live in the SRS (Google Doc
+// "SRS - Aum Manage Stocks").
+//
+// Not expressible in DBML: partial unique indexes and seed data live in
+// api/prisma/sql/*.sql (SqlScriptsRunner applies them on boot).
 // =====================================================================
-
 
 // ---------------------------------------------------------------------
 // ENUMS
 // ---------------------------------------------------------------------
-
-Enum user_role {
+Enum StockMovementType {
+  MANUAL_ADJUSTMENT
+  CHAT_ADJUSTMENT
+  SALE
+  SALE_VOID
+}
+Enum SaleStatus {
+  COMPLETED
+  VOIDED
+}
+Enum StockMovementSource {
+  WEB
+  LINE
+}
+Enum PendingActionSource {
+  WEB
+  LINE
+}
+Enum PendingActionIntent {
+  ADJUST_STOCK
+  SELL
+  TRANSFER_STOCK
+}
+Enum StockOperation {
+  INCREASE
+  DECREASE
+}
+Enum PendingActionStatus {
+  PENDING
+  CONFIRMED
+  CANCELLED
+  EXPIRED
+}
+Enum UserRole {
   SHOP_OWNER
   SHOP_STAFF
   ADMIN
   SUPER_ADMIN
 }
-
-Enum user_status {
+Enum UserStatus {
   ACTIVE
   SUSPENDED
 }
-
-Enum subscription_status {
+Enum AdminAuditAction {
+  USER_SUSPEND
+  USER_REACTIVATE
+  USER_ROLE_CHANGE
+  SHOP_SUSPEND
+  SHOP_REACTIVATE
+}
+Enum AdminAuditTargetType {
+  USER
+  SHOP
+}
+Enum SubscriptionStatus {
   ACTIVE
   EXPIRED
   CANCELLED
 }
-
-Enum payment_purpose {
-  NEW_SUBSCRIPTION
-  UPGRADE
-  RENEWAL
-}
-
-Enum payment_status {
-  PENDING
-  PAID
-  FAILED    // จ่ายไม่ผ่าน หรือใบหมดอายุแล้วถูก cron เก็บกวาด
-  CANCELLED // ผู้ใช้กดยกเลิกใบที่ค้างเอง — ปลดล็อกให้เปิดใบใหม่ได้
-  REFUNDED
-}
-
-Enum shop_status {
+Enum ShopStatus {
   ACTIVE
   SUSPENDED
 }
-
+Enum PaymentPurpose {
+  NEW_SUBSCRIPTION
+  RENEWAL
+}
+Enum PaymentStatus {
+  PENDING
+  PAID
+  FAILED
+  CANCELLED
+  REFUNDED
+}
 Enum shop_product_status {
   ACTIVE
   INACTIVE
 }
-
-Enum movement_source {
-  MANUAL
-  CHATBOT
-  BARCODE_SALE
-}
-
-Enum movement_type {
-  STOCK_IN
-  STOCK_OUT
-  ADJUSTMENT
-  SALE
-}
-
-Enum sale_status {
-  COMPLETED
-  VOIDED
-}
-
-Enum pending_action_status {
-  PENDING
-  CONFIRMED
-  CANCELLED
-  EXPIRED
-  FAILED
-}
-
-// [อั้ม] แชทบอททำได้ 3 อย่างที่ต้องยืนยันก่อน — แยก intent ไว้เพราะปลายทาง
-// ตอนกดยืนยันคนละเส้นทางกันคนละโมดูล
-Enum pending_action_intent {
-  ADJUST_STOCK   // ปรับสต็อกเฉยๆ ไม่มีเงินเกี่ยวข้อง
-  SELL           // ตัดสต็อกพร้อมคิดเงิน สร้าง sales + sale_items
-  TRANSFER_STOCK // ย้ายไปร้านอื่นของเจ้าของคนเดียวกัน
-}
-
-Enum chat_channel {
-  WEB
-  LINE
-}
-
-Enum chat_role {
-  USER
-  ASSISTANT
-}
-
-Enum ai_recommendation_type {
-  RESTOCK
-  CLEARANCE
-  PROMOTION
-}
-
 Enum notification_type {
   LOW_STOCK
   SUBSCRIPTION_EXPIRING
@@ -128,31 +105,161 @@ Enum notification_type {
   PRODUCT_LIMIT_REACHED
   SHOP_LIMIT_REACHED
 }
+Enum chat_channel {
+  WEB
+  LINE
+}
+Enum chat_role {
+  USER
+  ASSISTANT
+}
+Enum ai_recommendation_type {
+  RESTOCK
+  CLEARANCE
+  PROMOTION
+}
 
+Table StockMovement {
+  id                uuid [pk]
+  shopId            uuid [not null]
+  shopProductId     uuid [not null, note: 'สต็อกผูกกับคู่ร้าน+สินค้าโดยตรง']
+  actorId           uuid [null, note: 'ผู้ทำรายการ']
+  sale_id           uuid [null, note: 'มีค่าเมื่อ movementType = SALE หรือ SALE_VOID']
+  pending_action_id uuid [null, note: 'มีค่าเมื่อมาจากคำสั่งแชทบอทที่ยืนยันแล้ว']
+  movementType      StockMovementType [not null, note: 'ปรับเอง / แชทบอท / ขาย / ยกเลิกบิล']
+  quantityDelta     int [not null, note: 'บวก = เพิ่ม, ลบ = ตัดออก']
+  quantityBefore    int [not null]
+  quantityAfter     int [not null]
+  source            StockMovementSource [not null, note: 'ช่องทางที่สั่ง: เว็บ หรือ LINE']
+  unit_cost         decimal(12,2) [null, note: 'ของเข้า = ทุนของล็อตที่เพิ่งเปิด / ของออก = ทุนเฉลี่ยถ่วงน้ำหนักของล็อตที่ถูกตัดจริง — null = แถวที่เกิดก่อนมีระบบล็อต ต้องแสดงเป็น "—" ไม่ใช่ 0']
+  note              text [null]
+  referenceType     text [null, note: 'คู่กับ referenceId กันบันทึกซ้ำ (เช่น การย้ายสต็อก) — UNIQUE(referenceType, referenceId)']
+  referenceId       text [null]
+  createdAt         timestamp(3) [not null, default: `now()`]
 
-// ---------------------------------------------------------------------
-// MODULE: AUTH & IDENTITY
-// ---------------------------------------------------------------------
+  indexes {
+    (referenceType, referenceId) [unique]
+    (shopId, createdAt)
+    (shopId, shopProductId, createdAt)
+    (shopId, actorId, createdAt)
+    (shopId, movementType, createdAt)
+    (sale_id)
+    (pending_action_id)
+  }
+
+  Note: '''
+  APPEND-ONLY LEDGER — ห้าม UPDATE/DELETE แถวเดิม
+  ตารางนี้คือแหล่งความจริงของสต็อก ส่วน shop_products.stock_qty เป็นแค่ cache
+  ที่ต้องอัปเดตใน transaction เดียวกันเสมอ
+  quantityAfter = quantityBefore + quantityDelta ทุกแถว
+  ชื่อตาราง/คอลัมน์เป็น PascalCase/camelCase เพราะ model นี้ไม่มี @@map
+  '''
+}
+
+Table PendingAction {
+  id                  uuid [pk]
+  shopId              uuid [not null]
+  actorId             uuid [null]
+  source              PendingActionSource [not null]
+  originalMessage     text [not null, note: 'ข้อความดิบที่ผู้ใช้พิมพ์ เช่น "เพิ่มโค้ก10"']
+  intent              PendingActionIntent [not null]
+  shopProductId       uuid [null]
+  productQuery        text [not null]
+  operation           StockOperation [not null]
+  quantity            int [not null]
+  status              PendingActionStatus [not null, default: 'PENDING']
+  payload             jsonb [null, note: 'ตัวเลือกสินค้าเมื่อชื่อกำกวม (StockChoiceService)']
+  parsed_items        jsonb [null, note: 'ผลการตีความ: shop_product_id / product_name / qty ต่อรายการ']
+  destination_shop_id uuid [null, note: 'ร้านปลายทาง มีค่าเมื่อ intent = TRANSFER_STOCK เท่านั้น']
+  expiresAt           timestamp(3) [not null, note: 'กันผู้ใช้กดยืนยันของเก่าข้ามวัน']
+  confirmedAt         timestamp(3) [null]
+  cancelledAt         timestamp(3) [null]
+  createdAt           timestamp(3) [not null, default: `now()`]
+  updatedAt           timestamp(3) [not null]
+
+  indexes {
+    (shopId, status, createdAt)
+    (expiresAt, status)
+  }
+
+  Note: '''
+  คำสั่งแชทบอทที่รอผู้ใช้ยืนยัน — ต้อง persist ลง DB เพราะการยืนยันจาก LINE
+  มาเป็นอีก request หนึ่ง (อีก process ก็ได้)
+  intent: ADJUST_STOCK / SELL / TRANSFER_STOCK (ปลายทางอยู่ใน destination_shop_id)
+  หมดอายุตาม PENDING_ACTION_TTL_MINUTES (ค่าเริ่มต้น 15 นาที)
+  ใช้ได้เฉพาะ Plus / Pro — เช็ค chatbot_enabled ก่อนสร้างแถว
+  '''
+}
+
+Table Sale {
+  id          uuid [pk]
+  shopId      uuid [not null]
+  staffId     uuid [not null, note: 'ผู้ขาย (แคชเชียร์)']
+  sale_no     varchar(30) [not null, default: `cuid()`, note: 'เลขบิล unique ต่อร้าน ต่างร้านซ้ำกันได้']
+  item_count  int [not null, default: 0]
+  status      SaleStatus [not null, default: 'COMPLETED']
+  totalAmount decimal(18,2) [not null]
+  note        text [null]
+  voidedById  uuid [null, note: 'ผู้ยกเลิกการขาย']
+  voidReason  text [null]
+  voidedAt    timestamp(3) [null]
+  createdAt   timestamp(3) [not null, default: `now()`]
+  updatedAt   timestamp(3) [not null]
+
+  indexes {
+    (shopId, sale_no) [unique]
+    (shopId, createdAt)
+    (shopId, status, createdAt)
+  }
+
+  Note: '''
+  ชื่อตาราง/คอลัมน์เป็น PascalCase/camelCase เพราะ model นี้ไม่มี @@map
+  '''
+}
+
+Table SaleItem {
+  id            uuid [pk]
+  saleId        uuid [not null]
+  shopProductId uuid [not null, note: 'อ้างอิงเท่านั้น — ห้าม join เอาชื่อ/ราคามาแสดงบนบิลย้อนหลัง']
+  productName   text [not null]
+  barcode       varchar(50) [null]
+  unitPrice     decimal(18,2) [not null]
+  cost_price    decimal(18,2) [not null, default: 0, note: 'ไว้คำนวณกำไรย้อนหลังให้ถูกต้อง']
+  quantity      int [not null]
+  lineTotal     decimal(18,2) [not null]
+  createdAt     timestamp(3) [not null, default: `now()`]
+
+  indexes {
+    (saleId)
+    (shopProductId)
+  }
+
+  Note: '''
+  ต้อง snapshot ชื่อ/ราคา/ต้นทุนไว้ในบิล — ห้าม join ไป shop_products เพื่อแสดงบิลย้อนหลัง
+  cost_price = ทุนของล็อตที่ถูกตัดจริง (FIFO) ใช้คิดกำไรย้อนหลัง
+  ทุก sale_item ต้องมี StockMovement คู่กันใน transaction เดียวกัน
+  '''
+}
 
 Table users {
-  id uuid [pk]
-  first_name varchar(100) [not null]
-  last_name varchar(100) [not null]
-  email varchar(255) [unique, null, note: 'แก้ไขไม่ได้หลังบันทึกแล้ว (SRS §122)']
-  email_verified_at timestamptz [null, note: 'NULL = ยังไม่ยืนยันอีเมล → login ด้วยรหัสผ่านไม่ได้ / สมัครด้วย Google ถือว่ายืนยันแล้วทันที']
-  username varchar(50) [unique, null, note: 'unique แบบ case-insensitive: UNIQUE(lower(username))']
-  password_hash varchar(255) [null, note: 'bcrypt — NULL ได้ถ้าสมัครด้วย LINE/Google ล้วน']
-  line_user_id varchar(100) [unique, null]
-  google_id varchar(100) [unique, null]
-  owner_id uuid [ref: > users.id, null, note: 'NULL = สมัครเอง / มีค่า = พนักงานที่เจ้าของร้านสร้างให้']
-  role user_role [not null]
-  two_factor_enabled boolean [not null, default: false]
-  two_factor_secret_enc varchar(255) [null, note: 'TOTP secret เข้ารหัสก่อนเก็บ']
-  status user_status [not null, default: 'ACTIVE']
-  last_login_at timestamptz [null]
-  deleted_at timestamptz [null, note: 'soft delete']
-  created_at timestamptz [not null, default: `now()`]
-  updated_at timestamptz [not null, default: `now()`]
+  id                    uuid [pk]
+  first_name            text [not null]
+  last_name             text [not null]
+  email                 text [null, note: 'unique แบบ case-insensitive เฉพาะบัญชีที่ยังไม่ถูกลบ (prisma/sql/004) — เจ้าของร้านเปลี่ยนได้ผ่าน POST /auth/email-change พนักงานเปลี่ยนไม่ได้']
+  email_verified_at     timestamptz [null, note: 'NULL = ยังไม่ยืนยันอีเมล → login ด้วยรหัสผ่านไม่ได้ / สมัครด้วย Google ถือว่ายืนยันแล้วทันที']
+  username              varchar(50) [null, note: 'unique เฉพาะบัญชีที่ยังไม่ถูกลบ (prisma/sql/004)']
+  password              text [null, note: 'bcrypt hash — NULL ได้ถ้าสมัครด้วย LINE/Google ล้วน']
+  line_user_id          text [unique, null]
+  google_id             text [unique, null]
+  owner_id              uuid [null, note: 'NULL = สมัครเอง / มีค่า = พนักงานที่เจ้าของร้านสร้างให้']
+  role                  UserRole [not null]
+  two_factor_enabled    boolean [not null, default: false]
+  two_factor_secret_enc text [null, note: 'TOTP secret เข้ารหัสก่อนเก็บ']
+  status                UserStatus [not null, default: 'ACTIVE']
+  last_login_at         timestamptz [null]
+  deleted_at            timestamptz [null, note: 'soft delete']
+  created_at            timestamptz [not null, default: `now()`]
+  updated_at            timestamptz [not null]
 
   indexes {
     (email) [name: 'idx_user_email']
@@ -163,112 +270,91 @@ Table users {
   }
 
   Note: '''
-  CHECK constraints ที่ต้องเพิ่มใน migration (DBML เขียนไม่ได้):
-  1) มีอย่างน้อย 1 ช่องทาง login (SRS §32, §86)
-     CHECK (email IS NOT NULL OR username IS NOT NULL
-            OR line_user_id IS NOT NULL OR google_id IS NOT NULL)
-  2) login ด้วย username ได้เมื่อมี password (SRS §37, §87)
-     CHECK (username IS NULL OR password_hash IS NOT NULL)
-  3) พนักงานต้องมี username + password ครบคู่ (SRS §36, §82)
-     CHECK (role <> 'SHOP_STAFF' OR (username IS NOT NULL AND password_hash IS NOT NULL))
-  4) พนักงานต้องมีเจ้าของ
-     CHECK (role <> 'SHOP_STAFF' OR owner_id IS NOT NULL)
-  UNIQUE ต้องเป็น lower(email) / lower(username)
-  owner_id ใช้ inline ref (ไม่ใช้บรรทัด Ref: แยก) เพราะ dbdiagram ฟ้อง
-  "nullable + operator >" ถ้าประกาศแบบแยกบรรทัด
-
-  Google linking: SRS §41-42 — ผูก Google ได้เฉพาะบัญชี SHOP_OWNER เท่านั้น
-  (พนักงานผูกได้แค่ LINE) ต้องบังคับที่ระดับ service/guard ไม่ใช่ DB constraint
+  CHECK constraints ที่ service บังคับไว้ (Prisma/DB ไม่มี CHECK):
+  1) มีอย่างน้อย 1 ช่องทาง login: email / username / line_user_id / google_id
+  2) login ด้วย username ได้เมื่อมี password
+  3) พนักงาน (SHOP_STAFF) ต้องมี username + password และ owner_id เสมอ
+  UNIQUE จริงอยู่ที่ prisma/sql/004: lower(email) และ username เฉพาะแถวที่ deleted_at IS NULL
+  ผูก Google ได้เฉพาะ SHOP_OWNER — บังคับที่ service ไม่ใช่ DB
   '''
 }
 
 Table refresh_tokens {
-  id uuid [pk]
-  user_id uuid [not null]
-  token_hash varchar(255) [not null, note: 'เก็บ hash เท่านั้น ห้ามเก็บ token ดิบ']
-  family_id uuid [not null, note: 'รอบการ rotate เดียวกัน ใช้เพิกถอนทั้งสาย']
-  used_at timestamptz [null, note: 'ถ้าถูกใช้ซ้ำ = reuse detection']
+  id         uuid [pk]
+  user_id    uuid [not null]
+  token_hash text [unique, not null, note: 'เก็บ hash เท่านั้น ห้ามเก็บ token ดิบ']
+  family_id  uuid [not null, note: 'รอบการ rotate เดียวกัน ใช้เพิกถอนทั้งสาย']
+  used_at    timestamptz [null, note: 'ถ้าถูกใช้ซ้ำ = reuse detection']
   revoked_at timestamptz [null]
   expires_at timestamptz [not null]
-  user_agent varchar(255) [null]
-  ip_address varchar(45) [null]
   created_at timestamptz [not null, default: `now()`]
 
   indexes {
-    (token_hash) [unique, name: 'uq_refresh_token_hash']
     (user_id) [name: 'idx_refresh_token_user']
     (family_id) [name: 'idx_refresh_token_family']
   }
 }
 
 Table password_reset_tokens {
-  id uuid [pk]
-  user_id uuid [not null]
-  token_hash varchar(255) [not null]
+  id         uuid [pk]
+  user_id    uuid [not null]
+  token_hash text [not null]
   expires_at timestamptz [not null]
-  used_at timestamptz [null, note: 'ใช้ได้ครั้งเดียว']
+  used_at    timestamptz [null, note: 'ใช้ได้ครั้งเดียว']
   created_at timestamptz [not null, default: `now()`]
 
   indexes {
-    (token_hash) [unique, name: 'uq_password_reset_hash']
     (user_id) [name: 'idx_password_reset_user']
   }
 
-  Note: 'ใช้ได้เฉพาะบัญชีที่มี email ผูกไว้ (SRS §124) — พนักงานรีเซ็ตเองไม่ได้ เจ้าของร้านเปลี่ยนให้เท่านั้น (SRS §125-126)'
+  Note: '''
+  ใช้ได้เฉพาะบัญชีที่มี email ผูกไว้ — พนักงานรีเซ็ตเองไม่ได้ เจ้าของร้านเปลี่ยนให้เท่านั้น
+  '''
 }
 
-Enum admin_audit_action {
-  USER_SUSPEND
-  USER_REACTIVATE
-  USER_ROLE_CHANGE
-  SHOP_SUSPEND
-  SHOP_REACTIVATE
-}
+Table email_verification_tokens {
+  id            uuid [pk]
+  user_id       uuid [not null]
+  pending_email text [null]
+  token_hash    text [unique, not null]
+  expires_at    timestamptz [not null]
+  used_at       timestamptz [null, note: 'ใช้ได้ครั้งเดียว']
+  created_at    timestamptz [not null, default: `now()`]
 
-Enum admin_audit_target_type {
-  USER
-  SHOP
+  indexes {
+    (user_id) [name: 'idx_email_verification_user']
+  }
+
+  Note: '''
+  ยืนยันอีเมลตอนสมัครด้วยอีเมล — ไม่ได้อยู่ใน SRS เป็นข้อกำหนดเพิ่มจากทีม กันการสมัครด้วยอีเมลปลอม
+  '''
 }
 
 Table admin_audit_logs {
-  id uuid [pk]
-  actor_id uuid [not null, note: 'Admin/Super Admin ที่ทำรายการ — restrict ไม่ให้ประวัติหายเมื่อลบบัญชี']
-  action admin_audit_action [not null]
-  target_type admin_audit_target_type [not null]
-  target_id uuid [not null, note: 'ไม่มี FK เพราะชี้ได้ทั้ง users และ shops แล้วแต่ target_type']
-  reason text [null, note: 'เหตุผลที่ระงับ (SRS §185 ให้ระงับได้แต่ไม่ได้ระบุที่เก็บเหตุผล)']
-  metadata jsonb [null, note: 'ข้อมูลเพิ่มเติมแล้วแต่ action เช่น เปลี่ยน role เก็บ { from, to }']
-  created_at timestamptz [not null, default: `now()`]
+  id          uuid [pk]
+  actor_id    uuid [not null, note: 'Admin/Super Admin ที่ทำรายการ — restrict ไม่ให้ประวัติหายเมื่อลบบัญชี']
+  action      AdminAuditAction [not null]
+  target_type AdminAuditTargetType [not null]
+  target_id   uuid [not null, note: 'ไม่มี FK เพราะชี้ได้ทั้ง users และ shops แล้วแต่ target_type']
+  reason      text [null, note: 'เหตุผลที่ระงับ']
+  metadata    jsonb [null, note: 'ข้อมูลเพิ่มเติมแล้วแต่ action เช่น เปลี่ยน role เก็บ { from, to }']
+  created_at  timestamptz [not null, default: `now()`]
 
   indexes {
     (actor_id, created_at) [name: 'idx_admin_audit_actor']
     (target_type, target_id, created_at) [name: 'idx_admin_audit_target']
   }
 
-  Note: 'APPEND-ONLY — ห้าม UPDATE/DELETE แถวเดิม (เหมือน stock_movements และ payments)'
-}
-
-Table email_verification_tokens {
-  id uuid [pk]
-  user_id uuid [not null]
-  token_hash varchar(255) [not null]
-  expires_at timestamptz [not null]
-  used_at timestamptz [null, note: 'ใช้ได้ครั้งเดียว']
-  created_at timestamptz [not null, default: `now()`]
-
-  indexes {
-    (token_hash) [unique, name: 'uq_email_verification_hash']
-    (user_id) [name: 'idx_email_verification_user']
-  }
-
-  Note: 'ยืนยันอีเมลตอนสมัครด้วยอีเมล — ไม่ได้อยู่ใน SRS เป็นข้อกำหนดเพิ่มจากทีม กันการสมัครด้วยอีเมลปลอม'
+  Note: '''
+  APPEND-ONLY — ห้าม UPDATE/DELETE แถวเดิม (เหมือน stock_movements และ payments)
+  '''
 }
 
 Table two_factor_recovery_codes {
-  id uuid [pk]
-  user_id uuid [not null]
-  code_hash varchar(255) [not null]
-  used_at timestamptz [null]
+  id         uuid [pk]
+  user_id    uuid [not null]
+  code_hash  text [not null]
+  used_at    timestamptz [null]
   created_at timestamptz [not null, default: `now()`]
 
   indexes {
@@ -276,35 +362,47 @@ Table two_factor_recovery_codes {
   }
 
   Note: '''
-  SRS §39-40, §100-105 ระบุ 2FA (TOTP) ไว้ละเอียด: ทุก user เปิดเองได้จาก
+  ระบุ 2FA (TOTP) ไว้ละเอียด: ทุก user เปิดเองได้จาก
   โปรไฟล์ (ไม่บังคับ), ต้องออก recovery codes ตอนเปิดสำเร็จ, ห้ามส่ง
   recovery codes ซ้ำผ่านช่องทางใดๆ ภายหลัง (รวมอีเมล) — ถ้าทำหายต้องให้
   Admin ปิด 2FA ให้ด้วยมือหลังยืนยันตัวตนนอกระบบ
   '''
 }
 
+Table categories {
+  id            uuid [pk]
+  owner_id      uuid [not null, note: 'หมวดหมู่เป็นของเจ้าของร้าน ใช้ร่วมกันได้ทุกร้าน']
+  name          varchar(100) [not null]
+  display_order int [not null, default: 0]
+  created_at    timestamptz [not null, default: `now()`]
+  updated_at    timestamptz [not null, default: `now()`]
 
-// ---------------------------------------------------------------------
-// MODULE: BILLING & SUBSCRIPTION
-// ---------------------------------------------------------------------
-
-Table subscription_plans {
-  id uuid [pk]
-  code varchar(50) [unique, not null, note: 'FREE / PLUS / PRO']
-  name_th varchar(100) [not null]
-  price_thb decimal(12,2) [not null, note: 'ราคาต่อปี — ไม่มีแพ็กเกจรายเดือน (SRS §56, §109)']
-  duration_months int [null, note: '12 สำหรับ Paid Plan, NULL = Free Plan ไม่มีวันหมดอายุ']
-  included_shop_quota int [not null, default: 1, note: 'Free=1, Plus=3, Pro=5 (SRS §57-59)']
-  max_active_products int [null, note: 'Free=100, Plus=3000, Pro=5000 (SRS §57-59, §152)']
-  included_staff_quota int [not null, default: 0, note: 'Free=0 (ไม่รองรับพนักงาน), Plus=6, Pro=10 (SRS §132)']
-  chatbot_enabled boolean [not null, default: false, note: 'Plus/Pro เท่านั้น (SRS §71, §160)']
-  barcode_enabled boolean [not null, default: false, note: 'Plus/Pro เท่านั้น (SRS §72, §167)']
-  ai_recommendation_enabled boolean [not null, default: false, note: 'Pro เท่านั้น — ไม่ใช่ Plus (SRS §179, §181)']
-  is_free boolean [not null, default: false]
-  is_active boolean [not null, default: true]
+  indexes {
+    (owner_id, name) [unique, name: 'uq_category_owner_name']
+  }
 
   Note: '''
-  Seed ต้องมีครบ 3 แถวตาม SRS §57-59 (ดู prisma/sql/003_seed_subscription_plans.sql
+  owner_id ไม่มี FK ในฐานข้อมูลจริง (เป็น uuid เปล่า) — ตรวจความเป็นเจ้าของที่ service
+  '''
+}
+
+Table subscription_plans {
+  id                        uuid [pk]
+  code                      varchar(50) [unique, not null, note: 'FREE / PLUS / PRO']
+  name_th                   varchar(100) [not null]
+  price_thb                 decimal(12,2) [not null, note: 'ราคาต่อปี — ไม่มีแพ็กเกจรายเดือน']
+  duration_months           int [null, note: '12 สำหรับ Paid Plan, NULL = Free Plan ไม่มีวันหมดอายุ']
+  included_shop_quota       int [not null, default: 1, note: 'Free=1, Plus=3, Pro=5']
+  included_staff_quota      int [not null, default: 0, note: 'Free=0 (ไม่รองรับพนักงาน), Plus=6, Pro=10']
+  max_active_products       int [null, note: 'Free=100, Plus=3000, Pro=5000']
+  chatbot_enabled           boolean [not null, default: false, note: 'Plus/Pro เท่านั้น']
+  barcode_enabled           boolean [not null, default: false, note: 'Plus/Pro เท่านั้น']
+  ai_recommendation_enabled boolean [not null, default: false, note: 'Pro เท่านั้น — ไม่ใช่ Plus']
+  is_free                   boolean [not null, default: false]
+  is_active                 boolean [not null, default: true]
+
+  Note: '''
+  Seed ต้องมีครบ 3 แถวตาม (ดู prisma/sql/003_seed_subscription_plans.sql
   และ SubscriptionPlanSeeder ซึ่งเป็นตัวเติมจริงตอนแอป boot):
   - FREE: price=0,    included_shop_quota=1, max_active_products=100,
           included_staff_quota=0,  chatbot=false, barcode=false, ai=false,
@@ -315,87 +413,79 @@ Table subscription_plans {
   - PRO:  price=3499, included_shop_quota=5, max_active_products=5000,
           included_staff_quota=10, chatbot=true,  barcode=true,  ai=true,
           duration_months=12
-  ทุก user ใหม่ต้องได้ subscriptions ชี้ไป plan FREE ทันทีตอนสมัคร (SRS §107)
+  ทุก user ใหม่ต้องได้ subscriptions ชี้ไป plan FREE ทันทีตอนสมัคร
 
   ไม่มีการซื้อสิทธิ์ (ร้าน/สินค้า/พนักงาน) เพิ่มแยกต่างหากจากแพ็กเกจ
-  ไม่ว่ากรณีใด — อัปเกรดได้เฉพาะเปลี่ยนไปแพ็กเกจที่สูงกว่าเท่านั้น (SRS §66, §110)
+  ไม่ว่ากรณีใด — อัปเกรดได้เฉพาะเปลี่ยนไปแพ็กเกจที่สูงกว่าเท่านั้น
   '''
 }
 
 Table subscriptions {
-  id uuid [pk]
-  user_id uuid [unique, not null, note: '1 เจ้าของร้าน = 1 subscription']
-  plan_id uuid [not null]
-  status subscription_status [not null, default: 'ACTIVE']
-  started_at timestamptz [not null]
-  expires_at timestamptz [null, note: 'NULL สำหรับ Free Plan (SRS §116)']
-  expiry_notified_at timestamptz [null, note: 'กันส่งอีเมลเตือนซ้ำ (SRS §114)']
-  created_at timestamptz [not null, default: `now()`]
-  updated_at timestamptz [not null, default: `now()`]
+  id                 uuid [pk]
+  user_id            uuid [unique, not null, note: '1 เจ้าของร้าน = 1 subscription']
+  plan_id            uuid [not null]
+  status             SubscriptionStatus [not null, default: 'ACTIVE']
+  started_at         timestamp(3) [not null]
+  expires_at         timestamp(3) [null, note: 'NULL สำหรับ Free Plan']
+  expiry_notified_at timestamp(3) [null, note: 'กันแจ้งเตือนซ้ำ — cron แจ้งเตือนในระบบล่วงหน้า 7 วันก่อนหมดอายุ']
+  created_at         timestamp(3) [not null, default: `now()`]
+  updated_at         timestamp(3) [not null]
 
   indexes {
     (expires_at) [name: 'idx_subscription_expires']
   }
 
   Note: '''
-  quota: allowed = plan.shop_quota (ไม่มี extra quota แยก — ดู Note ของ
-         subscription_plans)
-         used    = COUNT(shops WHERE owner_id = user_id AND deleted_at IS NULL)
-         สร้างร้านใหม่ได้เมื่อ status = ACTIVE AND used < allowed (SRS §111)
-         -> ลบร้าน (soft delete) คืน quota ให้อัตโนมัติทันที เพราะ used
-            คำนวณสดทุกครั้งจาก deleted_at IS NULL ไม่ได้เก็บเป็นตัวเลขนิ่ง
-
-  อัปเกรด FREE -> PLUS/PRO หรือ PLUS -> PRO: อัปเดต plan_id เป็น plan ใหม่,
-  ตั้ง started_at/expires_at ใหม่ ในทรานแซกชันเดียวกับการสร้าง payments
-  (ร้าน/สินค้าที่มีอยู่แล้วนับรวมใน quota ใหม่ทันที ไม่ต้องย้ายข้อมูล — SRS §110)
-  ห้ามดาวน์เกรดข้ามแพ็กเกจในระบบนี้ (SRS ไม่ได้ระบุ downgrade flow)
-
-  read-only mode ไม่มีคอลัมน์เก็บ — คำนวณจาก status/expires_at
-  แล้วบังคับที่ NestJS Guard ชั้นเดียว (กันสถานะขัดแย้ง) (SRS §115)
-  Free Plan (expires_at = NULL) ไม่มีวันเข้า read-only (SRS §116)
+  quota ร้าน: allowed = subscription_plans.included_shop_quota
+  used = COUNT(shops WHERE owner_id = user_id AND deleted_at IS NULL) คำนวณสดทุกครั้ง
+  ลบร้าน (soft delete) จึงคืน quota ทันที
+  การซื้อ/อัปเกรด/ต่ออายุมีผลเฉพาะใน POST /payments/:id/confirm หลัง Stripe ยืนยันว่าจ่ายแล้ว
+  Plus -> Pro ระหว่างยังไม่หมดอายุ: จ่ายส่วนต่าง วันหมดอายุคงเดิม
+  ต่ออายุ: เปิดได้ 30 วันก่อนหมดอายุ ต่อจากวันหมดอายุเดิม 12 เดือน
+  ไม่มี downgrade
+  read-only ไม่มีคอลัมน์เก็บ — คำนวณจาก status/expires_at ด้วย isSubscriptionReadOnly()
+  และทุก write path ต้องเรียก AccountContextService.assertNotReadOnly() (ไม่มี guard กลาง)
+  Free Plan (expires_at = NULL) ไม่มีวันเข้า read-only
   '''
 }
 
 Table payments {
-  id uuid [pk]
-  user_id uuid [not null]
+  id              uuid [pk]
+  user_id         uuid [not null]
   subscription_id uuid [null]
-  purpose payment_purpose [not null, note: 'NEW_SUBSCRIPTION / UPGRADE / RENEWAL เท่านั้น']
-  amount_thb decimal(12,2) [not null]
-  currency char(3) [not null, default: 'THB']
-  status payment_status [not null, default: 'PENDING']
-  provider varchar(50) [not null, note: 'omise / stripe']
-  provider_ref varchar(255) [unique, not null, note: 'idempotency key จาก gateway กันตัดเงินซ้ำ']
-  paid_at timestamptz [null]
-  created_at timestamptz [not null, default: `now()`]
+  purpose         PaymentPurpose [not null, note: 'NEW_SUBSCRIPTION (ซื้อ/อัปเกรด) หรือ RENEWAL (ต่ออายุ) — ไม่มีการซื้อ quota แยก']
+  amount_thb      decimal(12,2) [not null]
+  currency        char(3) [not null, default: 'THB']
+  status          PaymentStatus [not null, default: 'PENDING']
+  provider        varchar(50) [not null, note: 'stripe']
+  provider_ref    text [unique, not null, note: 'Stripe PaymentIntent id — unique กันบันทึกซ้ำ']
+  paid_at         timestamp(3) [null]
+  created_at      timestamp(3) [not null, default: `now()`]
 
   indexes {
     (user_id, created_at) [name: 'idx_payment_user_date']
   }
 
-  Note: 'append-only — ห้าม UPDATE ยอดเงิน คืนเงินให้สร้างแถวใหม่ status REFUNDED'
+  Note: '''
+  append-only — ห้าม UPDATE ยอดเงิน คืนเงินให้สร้างแถวใหม่ status REFUNDED
+  '''
 }
 
-
-// ---------------------------------------------------------------------
-// MODULE: SHOP & PERMISSION
-// ---------------------------------------------------------------------
-
 Table shops {
-  id uuid [pk]
-  owner_id uuid [not null, note: 'ทุกร้านมีเจ้าของเพียงคนเดียว (SRS §48)']
-  name varchar(150) [not null]
+  id          uuid [pk]
+  owner_id    uuid [not null, note: 'ทุกร้านมีเจ้าของเพียงคนเดียว']
+  name        varchar(150) [not null]
   description text [null]
-  image_url varchar(500) [null, note: 'Cloudinary']
-  phone varchar(20) [null, note: 'เก็บเป็น string เบอร์ไทยขึ้นต้นด้วย 0']
-  address text [null]
-  latitude decimal(9,6) [null, note: 'ปักหมุดตำแหน่งร้านผ่านแผนที่ (OpenStreetMap) — ไม่บังคับ']
-  longitude decimal(9,6) [null]
-  status shop_status [not null, default: 'ACTIVE', note: 'SUSPENDED ตั้งโดย Admin เท่านั้น (SRS §185)']
-  paused_at timestamptz [null, note: 'เจ้าของพักร้านชั่วคราวเอง — คนละอย่างกับ status=SUSPENDED']
-  deleted_at timestamptz [null, note: 'soft delete — คืน quota ให้เจ้าของทันที (ดู Note ของ subscriptions)']
-  created_at timestamptz [not null, default: `now()`]
-  updated_at timestamptz [not null, default: `now()`]
+  image_url   varchar(500) [null, note: 'Cloudinary']
+  phone       varchar(20) [null, note: 'เก็บเป็น string เบอร์ไทยขึ้นต้นด้วย 0']
+  address     text [null]
+  latitude    decimal(9,6) [null, note: 'ปักหมุดตำแหน่งร้านผ่านแผนที่ (OpenStreetMap) — ไม่บังคับ']
+  longitude   decimal(9,6) [null]
+  status      ShopStatus [not null, default: 'ACTIVE', note: 'SUSPENDED ตั้งโดย Admin เท่านั้น']
+  paused_at   timestamp(3) [null, note: 'เจ้าของพักร้านชั่วคราวเอง — คนละอย่างกับ status=SUSPENDED']
+  deleted_at  timestamp(3) [null, note: 'soft delete — คืน quota ให้เจ้าของทันที (ดู Note ของ subscriptions)']
+  created_at  timestamp(3) [not null, default: `now()`]
+  updated_at  timestamp(3) [not null]
 
   indexes {
     (owner_id, deleted_at) [name: 'idx_shop_owner']
@@ -410,11 +500,11 @@ Table shops {
 }
 
 Table shop_staffs {
-  id uuid [pk]
-  shop_id uuid [not null]
-  user_id uuid [not null]
+  id          uuid [pk]
+  shop_id     uuid [not null]
+  user_id     uuid [not null]
   assigned_at timestamptz [not null, default: `now()`]
-  removed_at timestamptz [null, note: 'soft remove — เก็บประวัติผู้ทำรายการไว้']
+  removed_at  timestamptz [null, note: 'soft remove — เก็บประวัติผู้ทำรายการไว้']
 
   indexes {
     (shop_id, user_id) [unique, name: 'uq_shop_staff']
@@ -423,104 +513,80 @@ Table shop_staffs {
 
   Note: '''
   เจ้าของร้านไม่มีแถวในตารางนี้ — สิทธิ์เต็มมาจาก shops.owner_id โดยตรง
-  พนักงาน 1 คนมอบหมายได้หลายร้าน แต่นับเป็น 1 คนใน staff_quota เสมอ
-  (SRS §139) — ต้องนับจาก users ที่มี owner_id ชี้มา ไม่ใช่นับแถวในตารางนี้
+  พนักงาน 1 คนมอบหมายได้หลายร้าน แต่นับเป็น 1 คนใน staff_quota เสมอ — ต้องนับจาก users ที่มี owner_id ชี้มา ไม่ใช่นับแถวในตารางนี้
   '''
 }
 
 Table staff_permissions {
-  id uuid [pk]
-  shop_staff_id uuid [unique, not null, note: '1:1 กับ shop_staffs — สิทธิ์กำหนดแยกรายร้าน (SRS §134)']
-  can_manage_product boolean [not null, default: false]
+  id                      uuid [pk]
+  shop_staff_id           uuid [unique, not null, note: '1:1 กับ shop_staffs — สิทธิ์กำหนดแยกรายร้าน']
+  can_manage_product      boolean [not null, default: false]
   can_adjust_stock_manual boolean [not null, default: false]
-  can_use_chatbot boolean [not null, default: false]
-  can_scan_sale boolean [not null, default: false]
-  can_view_dashboard boolean [not null, default: false]
-  can_view_ai_insight boolean [not null, default: false]
-  granted_by uuid [null, note: 'user id ของเจ้าของร้านที่แก้ไขล่าสุด']
-  updated_at timestamptz [not null, default: `now()`]
+  can_use_chatbot         boolean [not null, default: false]
+  can_scan_sale           boolean [not null, default: false]
+  can_view_dashboard      boolean [not null, default: false]
+  can_view_ai_insight     boolean [not null, default: false]
+  granted_by              uuid [null, note: 'user id ของเจ้าของร้านที่แก้ไขล่าสุด']
+  updated_at              timestamptz [not null, default: `now()`]
 
   Note: '''
   boolean column แทนที่แบบ 1 แถวต่อ 1 สิทธิ์เดิม — เลือกแบบนี้เพราะจำนวน
-  สิทธิ์คงที่และน้อย (6 อย่าง ตรงกับ SRS §138) และต้องเช็คสิทธิ์ทั้งชุดของ
+  สิทธิ์คงที่และน้อย (6 อย่าง ตรงกับ ) และต้องเช็คสิทธิ์ทั้งชุดของ
   คนคนเดียวทุก request จึง query ง่ายกว่า (1 แถวจบ ไม่ต้อง aggregate)
-  ค่าเริ่มต้นเมื่อสร้างบัญชีพนักงานใหม่ = false ทั้งหมด ตรงกับ SRS §139
-  "พนักงานใหม่ไม่มีสิทธิ์ใดๆ จนกว่าเจ้าของร้านจะเปิดให้"
+  ค่าเริ่มต้นเมื่อสร้างบัญชีพนักงานใหม่ = false ทั้งหมด ตรงกับ "พนักงานใหม่ไม่มีสิทธิ์ใดๆ จนกว่าเจ้าของร้านจะเปิดให้"
 
   ระบบต้องเช็คทั้ง 2 ชั้นก่อนอนุญาต action ของพนักงาน:
   1) staff_permissions ของแถวนี้ (สิทธิ์ที่เจ้าของร้านเปิดให้)
   2) subscription_plans ของเจ้าของร้าน (เช่น can_use_chatbot=true แต่ plan
-     เป็น FREE ที่ chatbot_enabled=false ก็ยังใช้ไม่ได้ — SRS §143-144)
+     เป็น FREE ที่ chatbot_enabled=false ก็ยังใช้ไม่ได้ )
   '''
 }
 
-
-// ---------------------------------------------------------------------
-// MODULE: CATALOG & INVENTORY
-// ---------------------------------------------------------------------
-
-Table categories {
-  id uuid [pk]
-  owner_id uuid [not null, note: 'หมวดหมู่เป็นของเจ้าของร้าน ใช้ร่วมกันได้ทุกร้าน']
-  name varchar(100) [not null]
-  display_order int [not null, default: 0]
-  created_at timestamptz [not null, default: `now()`]
-
-  indexes {
-    (owner_id, name) [unique, name: 'uq_category_owner_name']
-  }
-}
-
 Table products {
-  id uuid [pk]
-  owner_id uuid [not null, note: 'คลังกลางของเจ้าของร้าน ไม่ผูกกับ shop โดยตรง (SRS §14, §148)']
+  id          uuid [pk]
+  owner_id    uuid [not null, note: 'คลังกลางของเจ้าของร้าน ไม่ผูกกับ shop โดยตรง']
   category_id uuid [null]
-  name varchar(200) [not null, note: 'ข้อความไทย — ต้องมี GIN pg_trgm index']
-  barcode varchar(50) [null, note: 'unique ภายในคลังของเจ้าของร้านเดียวกัน ไม่ใช่ทั้งระบบ (SRS §150)']
-  cost_price decimal(12,2) [not null, note: 'ต้นทุน ใช้ร่วมกันทุกร้าน']
-  unit varchar(20) [not null, note: 'ชิ้น / ขวด / แพ็ค / กล่อง']
-  image_url varchar(500) [null]
-  deleted_at timestamptz [null, note: 'soft delete บังคับตาม SRS §55, §147 (ระดับคลังกลาง)']
-  created_at timestamptz [not null, default: `now()`]
-  updated_at timestamptz [not null, default: `now()`]
+  name        varchar(200) [not null, note: 'ค้นหาด้วยชื่อ (ILIKE)']
+  barcode     varchar(50) [null, note: 'unique ภายในคลังของเจ้าของร้านเดียวกัน ไม่ใช่ทั้งระบบ']
+  unit        varchar(20) [not null, note: 'ชิ้น / ขวด / แพ็ค / กล่อง']
+  image_url   varchar(500) [null]
+  deleted_at  timestamptz [null, note: 'soft delete บังคับตาม (ระดับคลังกลาง)']
+  created_at  timestamptz [not null, default: `now()`]
+  updated_at  timestamptz [not null, default: `now()`]
 
   indexes {
-    (owner_id, deleted_at) [name: 'idx_product_owner']
-    (owner_id, barcode) [unique, name: 'uq_product_owner_barcode']
+    (owner_id, deleted_at) [name: 'idx_product_owner_deleted']
+    (owner_id, name) [name: 'idx_product_owner_name']
     (category_id) [name: 'idx_product_category']
-    (name) [name: 'idx_product_name_trgm', note: 'ต้องเป็น GIN + pg_trgm — DBML รองรับแค่ btree/hash']
   }
 
   Note: '''
-  sell_price / stock_qty / low_stock_threshold อยู่ในตาราง shop_products
-  เพราะแต่ละร้านของเจ้าของคนเดียวกันตั้งราคา/สต็อกต่างกันได้ (SRS §148)
-
-  active product quota (100/3000/5000 ตาม plan) นับจาก products ที่
-  deleted_at IS NULL ของ owner_id นี้ — สินค้าเดียวกันขายหลายร้านนับ
-  quota แค่ 1 รายการ (SRS §14, §152)
-
-  ต้องเพิ่มใน migration (DBML เขียนไม่ได้):
-  - PARTIAL UNIQUE: CREATE UNIQUE INDEX ... ON products(owner_id, barcode)
-                    WHERE deleted_at IS NULL AND barcode IS NOT NULL
-    (สินค้าที่ soft delete แล้วต้องไม่บล็อกบาร์โค้ดเดิม)
-  - CREATE EXTENSION pg_trgm; แล้วสร้าง GIN index บน name
-    ไม่งั้น ILIKE ค้นหาภาษาไทยจะไม่ใช้ index เลย
+  sell_price / cost_price / stock_qty / low_stock_threshold อยู่ใน shop_products
+  เพราะแต่ละร้านของเจ้าของคนเดียวกันตั้งค่าต่างกันได้
+  active product quota (100 / 3,000 / 5,000) นับจาก products ที่ deleted_at IS NULL ของ owner_id นี้
+  สินค้าเดียวกันขายหลายร้านนับ quota แค่ 1 รายการ
+  owner_id ไม่มี FK ในฐานข้อมูลจริง (เป็น uuid เปล่า) — ตรวจความเป็นเจ้าของที่ service
+  PARTIAL UNIQUE (owner_id, barcode) WHERE deleted_at IS NULL AND barcode IS NOT NULL
+  อยู่ใน prisma/sql/001 (SqlScriptsRunner รันให้ตอนบูต)
   '''
 }
 
 Table shop_products {
-  id uuid [pk]
-  shop_id uuid [not null]
-  product_id uuid [not null]
-  sell_price decimal(12,2) [not null, note: 'ราคาขายเฉพาะร้านนี้ แต่ละร้านตั้งต่างกันได้']
-  stock_qty int [not null, default: 0, note: 'cache ยอดคงเหลือเฉพาะร้านนี้ ต้องอัปเดตใน transaction เดียวกับ stock_movements เสมอ']
-  low_stock_threshold int [not null, default: 0, note: 'เฉพาะร้านนี้ (SRS §149)']
-  status shop_product_status [not null, default: 'ACTIVE', note: 'ร้านนี้ยังขายสินค้านี้จากคลังกลางอยู่ไหม (opt-in/opt-out)']
-  created_at timestamptz [not null, default: `now()`]
-  updated_at timestamptz [not null, default: `now()`]
+  id                  uuid [pk]
+  shop_id             uuid [not null]
+  product_id          uuid [not null]
+  sell_price          decimal(12,2) [not null, note: 'ราคาขายเฉพาะร้านนี้ แต่ละร้านตั้งต่างกันได้']
+  cost_price          decimal(12,2) [not null, note: 'ต้นทุนตั้งต้นของล็อตใหม่ที่ไม่ได้ระบุต้นทุน และค่าสำรองของสินค้าที่ยังไม่มีล็อต']
+  stock_qty           int [not null, default: 0, note: 'cache ยอดคงเหลือเฉพาะร้านนี้ ต้องอัปเดตใน transaction เดียวกับ stock_movements เสมอ']
+  low_stock_threshold int [not null, default: 0, note: 'เฉพาะร้านนี้']
+  status              shop_product_status [not null, default: 'ACTIVE', note: 'ร้านนี้ยังขายสินค้านี้จากคลังกลางอยู่ไหม (opt-in/opt-out)']
+  created_at          timestamptz [not null, default: `now()`]
+  updated_at          timestamptz [not null, default: `now()`]
 
   indexes {
     (shop_id, product_id) [unique, name: 'uq_shop_product']
+    (shop_id, status) [name: 'idx_shop_product_shop_status']
+    (product_id) [name: 'idx_shop_product_product']
   }
 
   Note: '''
@@ -531,44 +597,15 @@ Table shop_products {
   '''
 }
 
-Table stock_movements {
-  id uuid [pk]
-  shop_product_id uuid [not null, note: 'สต็อกผูกกับคู่ร้าน+สินค้าโดยตรง']
-  user_id uuid [not null, note: 'ผู้ทำรายการ']
-  source movement_source [not null, note: 'manual / chatbot / บาร์โค้ด (SRS §174)']
-  type movement_type [not null]
-  qty_change int [not null, note: 'บวก = เพิ่ม, ลบ = ตัดออก']
-  qty_before int [not null]
-  qty_after int [not null]
-  unit_cost decimal(12,2) [null, note: 'ของเข้า = ทุนของล็อตที่เพิ่งเปิด / ของออก = ทุนเฉลี่ยถ่วงน้ำหนักของล็อตที่ถูกตัดจริง — null = แถวที่เกิดก่อนมีระบบล็อต ต้องแสดงเป็น "—" ไม่ใช่ 0']
-  note text [null]
-  sale_id uuid [null, note: 'มีค่าเมื่อ source = BARCODE_SALE']
-  pending_action_id uuid [null, note: 'มีค่าเมื่อ source = CHATBOT']
-  created_at timestamptz [not null, default: `now()`]
-
-  indexes {
-    (shop_product_id, created_at) [name: 'idx_movement_shop_product_date']
-    (user_id) [name: 'idx_movement_user']
-    (source) [name: 'idx_movement_source']
-  }
-
-  Note: '''
-  APPEND-ONLY LEDGER — ไม่มี updated_at ห้าม UPDATE/DELETE แถวเดิม
-  CHECK (qty_after = qty_before + qty_change)  -- invariant ที่ตรวจสอบตัวเองได้
-  ตารางนี้คือแหล่งความจริงของสต็อก ส่วน shop_products.stock_qty เป็นแค่ cache
-  ต้องบันทึกก่อน/หลังทุกครั้ง (SRS §158, §173)
-  '''
-}
-
 Table stock_lots {
-  id uuid [pk]
+  id              uuid [pk]
   shop_product_id uuid [not null]
-  unit_cost decimal(12,2) [not null, note: 'ทุนต่อชิ้นของล็อตนี้ — ล็อตที่เปิดแล้วห้ามแก้ทุน']
-  qty_received int [not null, note: 'จำนวนตอนรับเข้า ไม่เปลี่ยนอีก']
-  qty_remaining int [not null, note: 'เหลือเท่าไหร่ ลดลงเรื่อยๆ ตอนถูกตัด — 0 แล้วยังเก็บไว้ ไม่ลบ']
-  note text [null]
-  received_at timestamptz [not null, default: `now()`]
-  created_at timestamptz [not null, default: `now()`]
+  unit_cost       decimal(12,2) [not null, note: 'ทุนต่อชิ้นของล็อตนี้ — ล็อตที่เปิดแล้วห้ามแก้ทุน']
+  qty_received    int [not null, note: 'จำนวนตอนรับเข้า ไม่เปลี่ยนอีก']
+  qty_remaining   int [not null, note: 'เหลือเท่าไหร่ ลดลงเรื่อยๆ ตอนถูกตัด — 0 แล้วยังเก็บไว้ ไม่ลบ']
+  note            text [null]
+  received_at     timestamptz [not null, default: `now()`]
+  created_at      timestamptz [not null, default: `now()`]
 
   indexes {
     (shop_product_id, received_at) [name: 'idx_stock_lot_fifo']
@@ -586,120 +623,50 @@ Table stock_lots {
   '''
 }
 
-
-// ---------------------------------------------------------------------
-// MODULE: SALES
-// ---------------------------------------------------------------------
-
-Table sales {
-  id uuid [pk]
-  shop_id uuid [not null]
-  user_id uuid [not null, note: 'แคชเชียร์']
-  sale_no varchar(30) [not null, default: `cuid()`, note: 'เลขบิล unique ต่อร้าน ต่างร้านซ้ำกันได้']
-  total_amount decimal(12,2) [not null]
-  item_count int [not null, default: 0]
-  status sale_status [not null, default: 'COMPLETED']
-  note text [null]
-  voided_by_id uuid [null, note: 'ผู้ยกเลิกการขาย']
-  void_reason text [null]
-  voided_at timestamptz [null]
-  created_at timestamptz [not null, default: `now()`]
-  updated_at timestamptz [not null]
-
-  indexes {
-    (shop_id, sale_no) [unique, name: 'uq_sale_shop_no']
-    (shop_id, created_at) [name: 'idx_sale_shop_date']
-    (user_id) [name: 'idx_sale_cashier']
-  }
-}
-
-Table sale_items {
-  id uuid [pk]
-  sale_id uuid [not null]
-  shop_product_id uuid [not null, note: 'อ้างอิงเท่านั้น — ห้าม join เอาชื่อ/ราคามาแสดงบนบิลย้อนหลัง']
-  product_name_snapshot varchar(200) [not null]
-  barcode_snapshot varchar(50) [null]
-  unit_price_snapshot decimal(12,2) [not null]
-  cost_price_snapshot decimal(12,2) [not null, default: 0, note: 'ไว้คำนวณกำไรย้อนหลังให้ถูกต้อง']
-  quantity int [not null]
-  subtotal decimal(12,2) [not null]
+Table notifications {
+  id         uuid [pk]
+  user_id    uuid [not null, note: 'ผู้รับ']
+  shop_id    uuid [null]
+  type       notification_type [not null]
+  title      varchar(200) [not null]
+  message    text [not null]
+  payload    jsonb [null]
+  read_at    timestamptz [null]
   created_at timestamptz [not null, default: `now()`]
 
   indexes {
-    (sale_id) [name: 'idx_sale_item_sale']
-    (shop_product_id) [name: 'idx_sale_item_shop_product']
+    (user_id, read_at) [name: 'idx_notification_unread']
   }
-
-  Note: '''
-  ต้อง snapshot เพราะราคา/ชื่อสินค้าเปลี่ยนได้ บิลเมื่อวานต้องแสดงราคาเมื่อวาน
-  การ join ไป shop_products เพื่อเอาราคามาแสดง = บั๊กที่พบบ่อยที่สุดในระบบ POS
-  ทุก sale_item ต้องมี stock_movements คู่กัน 1 แถว สร้างใน transaction เดียวกัน
-  '''
-}
-
-
-// ---------------------------------------------------------------------
-// MODULE: AI & NOTIFICATION
-// ---------------------------------------------------------------------
-
-Table pending_stock_actions {
-  id uuid [pk]
-  shop_id uuid [not null]
-  user_id uuid [not null]
-  channel chat_channel [not null]
-  raw_text text [not null, note: 'ข้อความดิบที่ผู้ใช้พิมพ์ เช่น "เพิ่มโค้ก10"']
-  parsed_items jsonb [not null, note: 'ผลการตีความ: shop_product_id, product_name, qty_change ต่อรายการ']
-  intent pending_action_intent [not null, default: 'ADJUST_STOCK']
-  destination_shop_id uuid [null, note: 'ร้านปลายทาง มีค่าเมื่อ intent = TRANSFER_STOCK เท่านั้น']
-  status pending_action_status [not null, default: 'PENDING']
-  error_reason text [null, note: 'ตีความไม่สำเร็จ / ไม่พบสินค้า']
-  expires_at timestamptz [not null, note: 'กันผู้ใช้กดยืนยันของเก่าข้ามวัน']
-  confirmed_at timestamptz [null]
-  created_at timestamptz [not null, default: `now()`]
-
-  indexes {
-    (shop_id, status) [name: 'idx_pending_shop_status']
-    (user_id, status) [name: 'idx_pending_user_status']
-    (expires_at) [name: 'idx_pending_expires']
-  }
-
-  Note: '''
-  entity นี้ทำให้ FR "ต้องกดยืนยันก่อนบันทึกจริง" เป็นไปได้ (SRS §162-165)
-  ถ้าเก็บผลการตีความไว้ใน memory ผู้ใช้กดยืนยันจาก LINE อีก 5 นาทีถัดมา
-  (คนละ request คนละ process) จะไม่มีอะไรให้ยืนยัน — ต้อง persist ลง DB
-  Chat Bot ใช้ได้เฉพาะ Plus/Pro (SRS §160) ต้องเช็ค plan ก่อนสร้างแถวนี้
-  '''
 }
 
 Table chat_messages {
-  id uuid [pk]
-  shop_id uuid [not null]
-  user_id uuid [not null]
-  channel chat_channel [not null]
-  role chat_role [not null]
-  content text [not null]
+  id                uuid [pk]
+  shop_id           uuid [not null]
+  user_id           uuid [not null]
+  channel           chat_channel [not null]
+  role              chat_role [not null]
+  content           text [not null]
   pending_action_id uuid [null]
-  created_at timestamptz [not null, default: `now()`]
+  created_at        timestamptz [not null, default: `now()`]
 
   indexes {
     (shop_id, user_id, created_at) [name: 'idx_chat_scope_date']
   }
 
   Note: '''
-  AI Chat จำกัดสิทธิ์ตามช่องทางที่ผูกกับบัญชี ณ ปัจจุบัน ไม่ใช่ตอนสมัคร
-  (SRS §31, §91): บัญชีที่ผูก LINE ไว้ใช้ได้ทั้งเว็บและ LINE, บัญชีที่ไม่ได้
-  ผูก LINE ใช้ได้เฉพาะเว็บ — เช็คจาก users.line_user_id ของบัญชีนั้นสด ๆ
-  ทุกครั้ง ไม่ cache ไว้
+  AI Chat จำกัดสิทธิ์ตามช่องทางที่ผูกกับบัญชี ณ ปัจจุบัน: ผูก LINE ไว้ใช้ได้ทั้งเว็บและ LINE
+  ไม่ได้ผูกใช้ได้เฉพาะเว็บ — เช็ค users.line_user_id สดทุกครั้ง
+  pending_action_id เป็น uuid เปล่า ไม่มี FK ไปที่ PendingAction
   '''
 }
 
 Table chat_shop_prompts {
-  id uuid [pk]
-  user_id uuid [not null, unique]
+  id               uuid [pk]
+  user_id          uuid [unique, not null, note: 'unique เพื่อให้คำถามใหม่ทับของเก่าด้วย upsert — คนหนึ่งค้างได้คำถามเดียว']
   original_message text [not null]
-  selected_shop_id uuid [null]
-  expires_at timestamptz [not null]
-  created_at timestamptz [not null, default: `now()`]
+  selected_shop_id uuid [null, note: 'ร้านที่ผู้ใช้เพิ่งเลือก — ว่าง = ยังไม่ได้เลือก (เลขที่พิมพ์มาแปลว่า "เลือกร้าน") มีค่า = เลือกแล้ว (เลขที่พิมพ์มาแปลว่า "เลือกสินค้า" และ "ยืนยัน" ใช้ร้านนี้)  จำเป็นเพราะข้อความ LINE ทุกครั้งมาแบบไร้บริบท ถ้าไม่จำไว้ พอผู้ใช้พิมพ์ "ยืนยัน" ระบบจะถามว่าร้านไหนซ้ำอีกรอบ วนไม่จบ']
+  expires_at       timestamptz [not null]
+  created_at       timestamptz [not null, default: `now()`]
 
   Note: '''
   จำคำสั่งที่ผู้ใช้พิมพ์มา ระหว่างรอให้เลือกว่าหมายถึงร้านไหน — ใช้เฉพาะกับ
@@ -714,119 +681,100 @@ Table chat_shop_prompts {
 }
 
 Table ai_recommendations {
-  id uuid [pk]
-  shop_id uuid [not null]
+  id              uuid [pk]
+  shop_id         uuid [not null]
   shop_product_id uuid [null, note: 'NULL = คำแนะนำระดับร้าน ไม่เจาะจงสินค้า']
-  type ai_recommendation_type [not null]
-  title varchar(200) [not null]
-  content text [not null, note: 'ข้อความไทยที่แสดงบนแดชบอร์ด']
-  metrics jsonb [null, note: 'ตัวเลขที่ AI ใช้อ้างอิง เช่น ยอดขาย 30 วัน']
-  generated_at timestamptz [not null, default: `now()`]
-  valid_until timestamptz [null]
-  is_dismissed boolean [not null, default: false]
+  type            ai_recommendation_type [not null]
+  title           varchar(200) [not null]
+  content         text [not null, note: 'ข้อความไทยที่แสดงบนแดชบอร์ด']
+  metrics         jsonb [null, note: 'ตัวเลขที่ AI ใช้อ้างอิง เช่น ยอดขาย 30 วัน']
+  generated_at    timestamptz [not null, default: `now()`]
+  valid_until     timestamptz [null]
+  is_dismissed    boolean [not null, default: false]
 
   indexes {
     (shop_id, generated_at) [name: 'idx_ai_reco_shop_date']
   }
 
   Note: '''
-  ใช้ได้เฉพาะ Pro Plan เท่านั้น — ไม่ใช่ Plus (SRS §179, §181) ต้องเช็ค
-  subscription_plans.ai_recommendation_enabled ก่อนให้บริการทุกครั้ง
-  cache ผลลัพธ์ไว้ ไม่เรียก LLM ตอน render หน้าแดชบอร์ด — regenerate ตาม
-  event แล้ว push ผ่าน Socket.io (ต้อง "อัปเดตแบบเรียลไทม์" ตาม SRS §180)
+  ใช้ได้เฉพาะ Pro — เช็ค subscription_plans.ai_recommendation_enabled ก่อนเรียก LLM ทุกครั้ง
+  สร้างใหม่เมื่อผู้ใช้กดขอ (POST /shops/:shopId/ai/recommendations/generate) แล้วเก็บไว้ในตารางนี้
+  และ push ให้ทุกคนที่เปิดร้านนั้นผ่าน Socket.io — ไม่เรียก LLM ตอน render หน้า
   '''
 }
 
-Table notifications {
-  id uuid [pk]
-  user_id uuid [not null, note: 'ผู้รับ']
-  shop_id uuid [null]
-  type notification_type [not null]
-  title varchar(200) [not null]
-  message text [not null]
-  payload jsonb [null]
-  read_at timestamptz [null]
-  created_at timestamptz [not null, default: `now()`]
+Table _sql_scripts {
+  filename   text [pk]
+  checksum   text [not null]
+  applied_at timestamptz [not null, default: `now()`]
 
-  indexes {
-    (user_id, read_at) [name: 'idx_notification_unread']
-  }
+  Note: '''
+  ledger ของ SqlScriptsRunner — บันทึกว่าไฟล์ไหนใน prisma/sql/ รันไปแล้ว ไม่ใช่ข้อมูลธุรกิจ
+  '''
 }
 
-
 // ---------------------------------------------------------------------
-// RELATIONSHIPS
-// (users.owner_id ใช้ inline ref ในตัวตารางแล้ว ไม่ต้องเขียนซ้ำตรงนี้)
+// RELATIONSHIPS — every foreign key that exists in the database
 // ---------------------------------------------------------------------
-
-// Auth
+Ref: StockMovement.shopId > shops.id [delete: restrict]
+Ref: StockMovement.shopProductId > shop_products.id [delete: restrict]
+Ref: StockMovement.actorId > users.id [delete: restrict]
+Ref: StockMovement.sale_id > Sale.id [delete: restrict]
+Ref: StockMovement.pending_action_id > PendingAction.id [delete: restrict]
+Ref: PendingAction.shopId > shops.id [delete: restrict]
+Ref: PendingAction.destination_shop_id > shops.id [delete: restrict]
+Ref: PendingAction.shopProductId > shop_products.id [delete: restrict]
+Ref: PendingAction.actorId > users.id [delete: restrict]
+Ref: Sale.shopId > shops.id [delete: restrict]
+Ref: Sale.staffId > users.id [delete: restrict]
+Ref: Sale.voidedById > users.id [delete: restrict]
+Ref: SaleItem.saleId > Sale.id [delete: restrict]
+Ref: SaleItem.shopProductId > shop_products.id [delete: restrict]
+Ref: users.owner_id > users.id [delete: restrict]
 Ref: refresh_tokens.user_id > users.id [delete: cascade]
 Ref: password_reset_tokens.user_id > users.id [delete: cascade]
 Ref: email_verification_tokens.user_id > users.id [delete: cascade]
 Ref: admin_audit_logs.actor_id > users.id [delete: restrict]
 Ref: two_factor_recovery_codes.user_id > users.id [delete: cascade]
-
-// Billing
 Ref: subscriptions.user_id - users.id [delete: restrict]
 Ref: subscriptions.plan_id > subscription_plans.id [delete: restrict]
 Ref: payments.user_id > users.id [delete: restrict]
 Ref: payments.subscription_id > subscriptions.id [delete: set null]
-
-// Shop
 Ref: shops.owner_id > users.id [delete: restrict]
 Ref: shop_staffs.shop_id > shops.id [delete: cascade]
 Ref: shop_staffs.user_id > users.id [delete: restrict]
 Ref: staff_permissions.shop_staff_id - shop_staffs.id [delete: cascade]
 Ref: staff_permissions.granted_by > users.id [delete: set null]
-
-// Catalog
-Ref: categories.owner_id > users.id [delete: restrict]
-Ref: products.owner_id > users.id [delete: restrict]
 Ref: products.category_id > categories.id [delete: set null]
-Ref: shop_products.shop_id > shops.id [delete: cascade]
 Ref: shop_products.product_id > products.id [delete: restrict]
-
-// Inventory
-Ref: stock_movements.shop_product_id > shop_products.id [delete: restrict]
-Ref: stock_movements.user_id > users.id [delete: restrict]
-Ref: stock_movements.sale_id > sales.id [delete: restrict]
-Ref: stock_movements.pending_action_id > pending_stock_actions.id [delete: set null]
+Ref: shop_products.shop_id > shops.id [delete: cascade]
 Ref: stock_lots.shop_product_id > shop_products.id [delete: restrict]
-
-// Sales
-Ref: sales.shop_id > shops.id [delete: restrict]
-Ref: sales.user_id > users.id [delete: restrict]
-Ref: sale_items.sale_id > sales.id [delete: cascade]
-Ref: sale_items.shop_product_id > shop_products.id [delete: restrict]
-
-// AI
-Ref: pending_stock_actions.shop_id > shops.id [delete: cascade]
-// [อั้ม] restrict ไม่ใช่ cascade — ลบร้านปลายทางทิ้งแล้วคำสั่งย้ายที่ค้างอยู่
-// ต้องไม่หายเงียบ ๆ ไปด้วย ประวัติการสั่งต้องอ่านย้อนได้เสมอ
-Ref: pending_stock_actions.destination_shop_id > shops.id [delete: restrict]
-Ref: pending_stock_actions.user_id > users.id [delete: restrict]
+Ref: notifications.user_id > users.id [delete: cascade]
+Ref: notifications.shop_id > shops.id [delete: cascade]
 Ref: chat_messages.shop_id > shops.id [delete: cascade]
 Ref: chat_messages.user_id > users.id [delete: restrict]
-Ref: chat_messages.pending_action_id > pending_stock_actions.id [delete: set null]
-Ref: chat_shop_prompts.user_id > users.id [delete: cascade]
+Ref: chat_shop_prompts.user_id - users.id [delete: cascade]
 Ref: chat_shop_prompts.selected_shop_id > shops.id [delete: cascade]
 Ref: ai_recommendations.shop_id > shops.id [delete: cascade]
 Ref: ai_recommendations.shop_product_id > shop_products.id [delete: cascade]
 
-// Platform
-Ref: notifications.user_id > users.id [delete: cascade]
-Ref: notifications.shop_id > shops.id [delete: cascade]
-
+// Stored as plain uuids with no foreign key in the database (checked in code):
+//   products.owner_id   -> users.id
+//   categories.owner_id -> users.id
+//   chat_messages.pending_action_id -> PendingAction.id
+//   admin_audit_logs.target_id -> users.id or shops.id (by target_type)
 
 // ---------------------------------------------------------------------
-// TABLE GROUPS (dbdiagram จะจัดกลุ่มสีให้อัตโนมัติ)
+// TABLE GROUPS
 // ---------------------------------------------------------------------
 
 TableGroup auth {
   users
   refresh_tokens
   password_reset_tokens
+  email_verification_tokens
   two_factor_recovery_codes
+  admin_audit_logs
 }
 
 TableGroup billing {
@@ -845,26 +793,19 @@ TableGroup catalog_inventory {
   categories
   products
   shop_products
-  stock_movements
+  stock_lots
+  StockMovement
 }
 
 TableGroup sales {
-  sales
-  sale_items
+  Sale
+  SaleItem
 }
 
 TableGroup ai_platform {
-  pending_stock_actions
+  PendingAction
   chat_messages
+  chat_shop_prompts
   ai_recommendations
   notifications
-}
-
-// [แพรว] ledger ของ SqlScriptsRunner — บันทึกว่าไฟล์ไหนใน prisma/sql/ รันไปแล้ว
-// ไม่ใช่ข้อมูลธุรกิจ ไม่มีความสัมพันธ์กับตารางอื่น แต่ต้องมีใน schema ไม่งั้น
-// `prisma db push` จะขอลบทิ้งทุกครั้ง
-Table _sql_scripts {
-  filename   text [pk]
-  checksum   text [not null]
-  applied_at timestamptz [not null, default: `now()`]
 }
