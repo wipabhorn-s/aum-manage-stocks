@@ -517,4 +517,15 @@ describe('AuthService', () => {
       expect(users.disableTwoFactor).not.toHaveBeenCalled();
     });
   });
+
+  describe('requestEmailChange', () => {
+    it('พนักงานเปลี่ยนอีเมลตัวเองไม่ได้ แม้จะใส่รหัสผ่านถูก', async () => {
+      users.findById.mockResolvedValue(makeUser({ role: 'SHOP_STAFF' }));
+
+      await expect(
+        service.requestEmailChange(USER_ID, 'new@example.com', 'Passw0rd!'),
+      ).rejects.toBeInstanceOf(ForbiddenException);
+      expect(bcrypt.compare).not.toHaveBeenCalled();
+    });
+  });
 });

@@ -296,6 +296,11 @@ export class AuthService {
     currentPassword: string,
   ) {
     const user = await this.userService.findById(userId);
+    // SRS: พนักงานแก้ข้อมูลบัญชีตัวเองไม่ได้ รวมถึงอีเมล — หน้าเว็บซ่อนฟอร์มไว้
+    // แต่ต้องกันที่ API ด้วย ไม่งั้นยิง request ตรงก็เปลี่ยนได้
+    if (user?.role === UserRole.SHOP_STAFF) {
+      throw new ForbiddenException('Staff accounts cannot change their email');
+    }
     if (!user?.password) {
       throw new BadRequestException(
         'Set a password before changing your email',
