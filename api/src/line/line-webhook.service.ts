@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   ConflictException,
+  ForbiddenException,
   Inject,
   Injectable,
   Logger,
@@ -109,6 +110,69 @@ const HELP_TEXT = [
   '',
   'ผมจะสรุปให้ดูก่อน แล้วพิมพ์ "ยืนยัน" เพื่อบันทึก หรือ "ยกเลิก" เพื่อยกเลิก',
 ].join('\n');
+
+/**
+ * [อั้ม] แปลง ForbiddenException ของ guard ให้เป็นข้อความที่ผู้ใช้ LINE เข้าใจ
+ *
+ * เหตุผลเดียวกับที่ createPending() แปลง NotFoundException ไว้แล้ว — ข้อความ
+ * ตั้งต้น ("ตีความคำสั่งไม่สำเร็จ") ทำให้เข้าใจผิดว่าพิมพ์ผิด ทั้งที่ตีความสำเร็จ
+ * ตั้งแต่แรก แค่สิทธิ์ไม่ถึง ผู้ใช้จึงพิมพ์ซ้ำเดิมไปเรื่อย ๆ โดยไม่มีทางสำเร็จ
+ *
+ * แปลที่ชั้นนี้แทนการแก้ guard ใน src/stock/ports/ เพราะฝั่ง WEB ต้องได้ 403
+ * ตามเดิม และ guard ตัวนั้นเป็นของโมดูล stock (AGENTS.md: อย่าแก้ข้ามโมดูล)
+ *
+ * ถ้อยคำล้อกับ ChatService.buildErrorReply() ให้ตอบเหมือนกันทั้งสองช่องทาง
+ * — **แก้ที่นี่แล้วต้องไปแก้ที่นั่นด้วย** หลักเดียวกับที่ StockQueryService
+ * ถูกใช้ร่วมกันเพื่อให้คำตอบฝั่งเว็บกับฝั่ง LINE ตรงกันเสมอ
+ *
+ * เทียบจากข้อความอังกฤษที่ guard โยนมา ถ้าฝั่ง stock แก้ถ้อยคำเมื่อไหร่
+ * จะตกมาที่ข้อความตั้งต้นบรรทัดสุดท้าย ซึ่งยังอ่านรู้เรื่องอยู่ ไม่พังเงียบ
+ */
+function forbiddenMessage(error: ForbiddenException): string {
+  const response = error.getResponse();
+  const code =
+    typeof response === 'object' && response !== null
+      ? (response as { code?: unknown }).code
+      : undefined;
+
+  if (code === 'SHOP_PAUSED') {
+    return 'ร้านนี้ถูกพักไว้ชั่วคราว กรุณาเปิดร้านอีกครั้งก่อนปรับสต็อก';
+  }
+
+  const reason = error.message;
+
+  // ต้องเช็คก่อน 'Subscription' ตัวล่าง เพราะข้อความนี้มีคำว่า Subscription ด้วย
+  if (reason.includes('read-only')) {
+    return 'แพ็กเกจหมดอายุแล้ว ตอนนี้ดูข้อมูลได้อย่างเดียว กรุณาต่ออายุก่อนปรับสต็อก';
+  }
+
+  /**
+   * guard ของฝั่ง stock ใช้ข้อความเดียวกันทั้งกรณีแพ็กเกจ Free และกรณีแพ็กเกจ
+   * หมดอายุ (isSubscriptionReadOnly) — ต่างจาก ChatAccessService ของฝั่งเว็บ
+   * ที่แยกสองเคสให้ จึงแยกจากตรงนี้ไม่ได้ ต้องพ่วงเรื่องวันหมดอายุไว้ด้วย
+   * ไม่งั้นคนที่แพ็กเกจหมดอายุจะถูกบอกให้ไปอัปเกรดทั้งที่ซื้อไปแล้ว
+   */
+  if (reason.includes('does not include chatbot')) {
+    return [
+      'แพ็กเกจของคุณยังไม่รองรับแชทบอท กรุณาอัปเกรดเป็น Plus หรือ Pro',
+      'ถ้าเคยอัปเกรดไว้แล้ว กรุณาตรวจสอบว่าแพ็กเกจหมดอายุหรือยัง',
+    ].join('\n');
+  }
+
+  if (reason.includes('Chatbot access')) {
+    return 'คุณไม่มีสิทธิ์ใช้แชทบอทในร้านนี้ กรุณาติดต่อเจ้าของร้านให้เปิดสิทธิ์ให้';
+  }
+
+  if (reason.includes('Manual stock adjustment')) {
+    return 'คุณไม่มีสิทธิ์ปรับสต็อกในร้านนี้ กรุณาติดต่อเจ้าของร้านให้เปิดสิทธิ์ให้';
+  }
+
+  if (reason.includes('Stock history access')) {
+    return 'คุณไม่มีสิทธิ์ดูประวัติสต็อกในร้านนี้ กรุณาติดต่อเจ้าของร้านให้เปิดสิทธิ์ให้';
+  }
+
+  return 'คุณไม่มีสิทธิ์ทำรายการนี้ในร้านนี้ กรุณาติดต่อเจ้าของร้าน';
+}
 
 @Injectable()
 export class LineWebhookService {
@@ -1100,12 +1164,22 @@ export class LineWebhookService {
     error: unknown,
     context?: { shopId: string; actorId: string },
   ): Promise<void> {
+    const forbidden =
+      error instanceof ForbiddenException ? forbiddenMessage(error) : null;
+
     const text =
       error instanceof LineUserMessageError
         ? error.message
-        : 'ตีความคำสั่งไม่สำเร็จ กรุณาลองพิมพ์ใหม่ เช่น "เพิ่มโค้ก 10"';
+        : (forbidden ??
+          'ตีความคำสั่งไม่สำเร็จ กรุณาลองพิมพ์ใหม่ เช่น "เพิ่มโค้ก 10"');
 
-    if (!(error instanceof LineUserMessageError)) {
+    /**
+     * สิทธิ์ไม่ถึงไม่ใช่ความผิดพลาดของระบบ — เป็นผลลัพธ์ที่ถูกต้องของ guard
+     * log เป็น warn พอ ไม่ต้องมี stack trace ให้รก
+     */
+    if (error instanceof ForbiddenException) {
+      this.logger.warn(`LINE command rejected: ${error.message}`);
+    } else if (!(error instanceof LineUserMessageError)) {
       this.logger.error(
         `LINE event failed: ${String(error)}`,
         error instanceof Error ? error.stack : undefined,

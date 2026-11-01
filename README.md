@@ -141,7 +141,7 @@ aum-manage-stocks/
 ├── api/                          # NestJS REST API
 │   ├── prisma/
 │   │   ├── schema.prisma         # database schema
-│   │   ├── design/schema.dbml    # reviewed data model, kept in sync with the schema
+│   │   ├── design/schema.dbml    # data model for dbdiagram.io, generated from the schema
 │   │   ├── design/erd.drawio     # full ER diagram (draw.io)
 │   │   ├── migrations/           # old history + rebuilt baseline (see Deploy)
 │   │   └── sql/                  # constraints Prisma cannot express (partial unique indexes, seeds)
@@ -314,8 +314,9 @@ User ──< Payment
 - **SubscriptionPlan** carries the feature gates (`chatbot_enabled`,
   `barcode_enabled`, `ai_recommendation_enabled`)
 
-Full definitions: [`api/prisma/schema.prisma`](api/prisma/schema.prisma), the reviewed
-design in [`api/prisma/design/schema.dbml`](api/prisma/design/schema.dbml), and a full
+Full definitions: [`api/prisma/schema.prisma`](api/prisma/schema.prisma) (source of truth), the same model
+with design notes in [`api/prisma/design/schema.dbml`](api/prisma/design/schema.dbml) (paste into
+[dbdiagram.io](https://dbdiagram.io/d)), and a full
 ER diagram (every table, column and relationship) in
 [`api/prisma/design/erd.drawio`](api/prisma/design/erd.drawio). Open it at
 [app.diagrams.net](https://app.diagrams.net) → **File → Open from → Device**. Dashed
@@ -402,8 +403,8 @@ Every route requires `Authorization: Bearer <access_token>` unless it is public.
 | PATCH | `/admin/users/:id/suspend` \| `reactivate`, `/admin/shops/:id/suspend` \| `reactivate` | Suspend / reactivate |
 | POST / PATCH | `/admin/admins`, `/admin/admins/:id/role` | Admin accounts (super admin) |
 
-The per-endpoint contract the team works from is the `endpoint` sheet in
-`aum-manage-stocks.xlsx`.
+This table is the API contract: it is kept in step with the controllers, so update it in the
+same PR whenever a route changes.
 
 ---
 
@@ -473,10 +474,9 @@ Stack: **Railway** (API + PostgreSQL) + **Vercel** (web app), plus the existing
 Cloudinary, Brevo, Stripe (test mode), Google, LINE and Ollama accounts.
 
 > The live demo is currently built from a team member's copy of this repo,
-> [`Aum40/aum_manage_stock`](https://github.com/Aum40/aum_manage_stock), which adds
-> a few fixes not merged here yet. See
-> [`AGENTS.md` → Deployment](AGENTS.md#deployment). The steps below are for
-> deploying from this repo.
+> [`Aum40/aum_manage_stock`](https://github.com/Aum40/aum_manage_stock). Everything in it
+> is now in this repo as well, so the steps below deploy the same app. See
+> [`AGENTS.md` → Deployment](AGENTS.md#deployment).
 
 **1. Database and API (Railway)**
 1. Sign up at railway.com with GitHub → **New Project → Deploy from GitHub repo** →
