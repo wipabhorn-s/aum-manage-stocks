@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
-import { Prompt, Sarabun, IBM_Plex_Mono, Inter, Manrope, Noto_Sans_Thai } from "next/font/google";
+import { Prompt, Sarabun, IBM_Plex_Mono, Inter, Manrope } from "next/font/google";
+import localFont from "next/font/local";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { LocaleProvider } from "@/components/i18n/LocaleContext";
 import { MobileNavProvider } from "@/components/layout/MobileNavContext";
@@ -36,10 +37,19 @@ const manrope = Manrope({
   weight: ["400", "500", "600", "700"],
 });
 
-const notoSansThai = Noto_Sans_Thai({
+/*
+  Noto Sans Thai เก็บไฟล์ไว้ใน repo แทนการดึงจาก next/font/google
+  ตอน build บน CI บางรอบ Google Fonts ตอบ CSS ของฟอนต์นี้มาในรูปแบบที่
+  Turbopack อ่านไม่ได้ ("next/font/google queries have exactly one entry")
+  build จึงพังแบบสุ่มทั้งที่โค้ดไม่ได้เปลี่ยน ไฟล์นี้เป็น variable font
+  ตัวเดียวครอบน้ำหนัก 100–900 มาจาก github.com/google/fonts (OFL ดู
+  fonts/NotoSansThai-OFL.txt)
+*/
+const notoSansThai = localFont({
+  src: "./fonts/NotoSansThai-Variable.ttf",
   variable: "--font-noto-thai",
-  subsets: ["thai", "latin"],
-  weight: ["400", "500", "600", "700"],
+  weight: "100 900",
+  display: "swap",
 });
 
 export const metadata: Metadata = {

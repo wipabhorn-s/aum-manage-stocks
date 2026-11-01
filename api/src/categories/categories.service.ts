@@ -6,21 +6,26 @@ import {
 } from '@nestjs/common';
 import { Prisma } from '../database/generated/prisma/client';
 import { PrismaService } from '../database/prisma.service';
+import { AccountContextService } from '../common/access/account-context.service';
 import type { CreateCategoryDto, UpdateCategoryDto } from './dto/category.dto';
 
 @Injectable()
 export class CategoriesService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly accountContext: AccountContextService,
+  ) {}
 
   /**
    * Categories belong to the shop owner rather than to a shop, so an owner
    * with several shops shares one set across all of them.
    *
-   * TODO(staff): once feature/staff-resource merges, check
-   * `staff_permissions.can_manage_product` before letting a staff member
-   * create or update. Deleting stays owner-only.
+   * Every write goes through assertCanManageCatalog(): staff need
+   * `can_manage_product` (SRS: "พนักงานที่มีสิทธิ์จัดการสินค้า สร้าง แก้ไข และลบ
+   * หมวดหมู่ได้"), and an expired paid plan makes the account read-only.
    */
-  async create(ownerId: string, dto: CreateCategoryDto) {
+  async create(userId: string, dto: CreateCategoryDto) {
+    const { ownerId } = await this.assertCanWrite(userId);
     try {
       return await this.prisma.categories.create({
         data: {
@@ -41,10 +46,12 @@ export class CategoriesService {
     });
   }
 
-  async update(ownerId: string, id: string, dto: UpdateCategoryDto) {
+  async update(userId: string, id: string, dto: UpdateCategoryDto) {
     if (dto.name === undefined && dto.displayOrder === undefined) {
       throw new BadRequestException('At least one field must be provided');
     }
+
+    const { ownerId } = await this.assertCanWrite(userId);
 
     await this.findOwnedOrFail(ownerId, id);
 
@@ -63,9 +70,16 @@ export class CategoriesService {
     }
   }
 
-  async remove(ownerId: string, id: string) {
+  async remove(userId: string, id: string) {
+    const { ownerId } = await this.assertCanWrite(userId);
     await this.findOwnedOrFail(ownerId, id);
     await this.prisma.categories.delete({ where: { id } });
+  }
+
+  private async assertCanWrite(userId: string) {
+    const ctx = await this.accountContext.resolve(userId);
+    await this.accountContext.assertCanManageCatalog(ctx);
+    return ctx;
   }
   private async findOwnedOrFail(ownerId: string, id: string) {
     const category = await this.prisma.categories.findFirst({
