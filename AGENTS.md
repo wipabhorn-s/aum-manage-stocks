@@ -1,6 +1,6 @@
 # Aum Manage Stocks — Agent Guide
 
-Retail shop back-office stock management platform (NestJS API + Next.js web, pnpm monorepo: `api/`, `web/`). Ground truth for all business rules is `SRS - Aum Manage Stocks.docx` — when this guide, the DBML, or the endpoint spreadsheet disagree with it, the SRS wins; flag the conflict instead of silently picking one.
+Retail shop back-office stock management platform (NestJS API + Next.js web, pnpm monorepo: `api/`, `web/`). Ground truth for all business rules is the SRS (Google Doc "SRS - Aum Manage Stocks") — when this guide or the DBML disagree with it, the SRS wins; flag the conflict instead of silently picking one.
 
 ## Tech stack
 
@@ -20,7 +20,7 @@ Retail shop back-office stock management platform (NestJS API + Next.js web, pnp
 
 ## Repo map
 
-- `api/` — NestJS backend. `api/prisma/design/schema.dbml` is the reviewed ER diagram (source of truth for the data model, kept in sync with the SRS). `api/prisma/schema.prisma` is the actual Prisma schema — update both together when the model changes.
+- `api/` — NestJS backend. `api/prisma/schema.prisma` is the source of truth for the data model — it is what the database actually uses. `api/prisma/design/schema.dbml` (dbdiagram.io) was regenerated from it on 2026-11-02 and keeps the design notes; update it in the same PR whenever the schema changes.
 - `api/prisma/design/erd.drawio` — full ER diagram (every table, column and FK), generated from `schema.prisma`. Update it in the same PR whenever the schema changes.
 - `web/` — Next.js frontend.
 - **This file is the single source of team rules.** `api/` and `web/` each carry a thin `AGENTS.md` + `CLAUDE.md` that do nothing but `@`-import this one, so opening `api/` or `web/` on its own still loads the full guide. Add rules here, never to the stubs.
@@ -122,7 +122,7 @@ These sit on everyone's critical path, so a careless edit becomes a merge confli
 
 ## Deployment
 
-- **Web** runs on Vercel, **API + PostgreSQL** on Railway. As of 2026-11-01 both are built from อั้ม's copy, `Aum40/aum_manage_stock` (`main` at `9fe519d`), not from this repo. Its database files (the rebuilt migrations and `api/scripts/seed-test-users.sql`) are now copied here. Still only in อั้ม's copy: a LINE webhook error-message fix (`643c27e`, `line-webhook.service.ts`), `APP_URL` in `web/.env.example`, and `.vscode/settings.json`. Only here: the landing-nav fix `c0c6cc9` and the README. Once the two match, point Vercel and Railway at this repo so there is one source of truth.
+- **Web** runs on Vercel, **API + PostgreSQL** on Railway. As of 2026-11-01 both are built from อั้ม's copy, `Aum40/aum_manage_stock` (`main` at `9fe519d`), not from this repo. Everything in that copy is now in this repo too (rebuilt migrations, `seed-test-users.sql`, the LINE webhook error-message fix `643c27e`, `APP_URL` in `web/.env.example`, `.vscode/settings.json` and the landing-page wording). This repo additionally has the later fixes (email change, category permissions, self-hosted Noto Sans Thai). Point Vercel and Railway at this repo so there is one source of truth.
 - `api/scripts/seed-test-users.sql` creates one account per role, **including `SUPER_ADMIN`, all with the same password written in the file**. Never run it on a database real users can reach. If it was run on the Railway database, delete those accounts or change their passwords.
 - Production needs `APP_URL` on Vercel (the public origin used for OAuth redirect URIs) and `FRONTEND_URL` on Railway, and the two must match exactly.
 - Step-by-step setup is in `README.md` → Deploy.
@@ -166,7 +166,7 @@ Branch naming: `feature/<resource>-resource`.
 
 Every module above is implemented. Owners for the later modules come from the `[ชื่อ]` tags in `schema.prisma` and the git history, confirmed by the team.
 
-**The per-endpoint detail lives in `aum-manage-stocks.xlsx` (sheet `endpoint`), not here** — 98 rows of method/path/body/note that change as work progresses. Read that sheet before implementing an endpoint; treat it as the API contract and this table as the ownership map. Don't copy the endpoint list into this file — a stale copy is worse than no copy.
+**The API contract is the code** — the controllers under `api/src/**/*.controller.ts` and their DTOs. `README.md` → API reference lists every route and is updated in the same PR as the controller. Don't keep a separate endpoint list anywhere else — a stale copy is worse than no copy.
 
 ## Subscription model — fixed 3-tier, no à la carte quota
 
@@ -232,9 +232,9 @@ Owned by `feature/auth-resource` (แพรว). Everyone's endpoints sit behind
 - **`AuthGuard` does more than check the signature.** After verifying the JWT it looks the account up: soft-deleted gives `401`, suspended gives `403` with `code: "ACCOUNT_SUSPENDED"`. An access token is a signed blob, not a row, so it cannot be revoked — revoking refresh tokens only stops renewal, it does nothing to the token already in someone's hand. Without this lookup a deleted staff member keeps full write access until their token expires. It costs one indexed `select` per request; keep it.
 - **`ACCESS_TOKEN_EXPIRES_IN` is 900 seconds and should stay short.** It was 86400, which made the window above a whole day. The web app renews through `POST /auth/refresh`, which *is* checked against the database. `.env` is not committed, so raising it on one machine silently weakens only that machine.
 - **`@OwnerId()` resolves from the JWT**, not from a header: a `SHOP_OWNER` resolves to their own id, a `SHOP_STAFF` to `users.owner_id`, and an admin account is rejected with `403` because admins own no shop. Admin work goes through `/admin/*`.
-- **2FA is enforced on every login channel** (SRS §111) — password, LINE and Google alike. `POST /auth/login`, `GET /auth/line/callback` and `GET /auth/google/callback` all return `{ requires2fa: true, challengeToken }` instead of tokens when the account has 2FA on. Never call `issueTokensForUser()` from a new login path; go through `completeLogin()`.
+- **2FA is enforced on every login channel** — password, LINE and Google alike. `POST /auth/login`, `GET /auth/line/callback` and `GET /auth/google/callback` all return `{ requires2fa: true, challengeToken }` instead of tokens when the account has 2FA on. Never call `issueTokensForUser()` from a new login path; go through `completeLogin()`.
 - **Email can be changed** through `POST /auth/email-change` (current password + a link sent to the new address). Owners only — `AuthService.requestEmailChange()` rejects `SHOP_STAFF` with `403` (SRS: staff can't edit their own account).
-- **`POST /auth/2fa/disable` checks the password only when the account has one.** Accounts created through LINE or Google have `password = NULL` by design (SRS §89), so requiring it locked them out of ever turning 2FA off. `otpCode` or `recoveryCode` is always required — that plus the access token is already two factors.
+- **`POST /auth/2fa/disable` checks the password only when the account has one.** Accounts created through LINE or Google have `password = NULL` by design, so requiring it locked them out of ever turning 2FA off. `otpCode` or `recoveryCode` is always required — that plus the access token is already two factors.
 
 ## AI integration
 
@@ -247,7 +247,7 @@ Reference patterns live in the sibling project `../ollama/src` (client setup, st
 3. The result is saved as a `PendingAction` (`status = PENDING`, `expires_at` = now + `PENDING_ACTION_TTL_MINUTES`, default 15). Intents: `ADJUST_STOCK`, `SELL`, `TRANSFER_STOCK` (`destination_shop_id`). **Never hold it only in memory** — the LINE confirm arrives as a separate webhook request.
 4. An ambiguous product name stores the candidates in `payload` and asks the user to pick. An owner with several shops on LINE is asked which shop first; that half-finished state lives in `chat_shop_prompts` (one row per user) because a `PendingAction` needs a `shop_id`.
 5. On confirm: write `stock_movements` (and a `sale` for `SELL`) and update `shop_products.stock_qty` in one transaction, then mark the action `CONFIRMED`. Unconfirmed actions become `EXPIRED`.
-6. A plan or permission rejection must tell the user the real reason, not "couldn't understand the command" (fixed for LINE in อั้ม's repo, `643c27e`, not merged here yet).
+6. A plan or permission rejection must tell the user the real reason, not "couldn't understand the command" (`LineWebhookService` maps guard rejections to Thai reasons; keep its wording in step with `ChatService.buildErrorReply()`).
 
 **AI Recommendations** (Pro only): `AiAccessService` checks `ai_recommendation_enabled` before calling the LLM. Results are generated **on request** (`POST /shops/:shopId/ai/recommendations/generate`), stored in `ai_recommendations`, and pushed to everyone viewing that shop through the Socket.io gateway. Never call the LLM while rendering a page.
 
@@ -281,14 +281,14 @@ Add components with `pnpm dlx shadcn@latest add <component>`; they inherit this 
 
 ## SRS alignment — already fixed, don't reintroduce
 
-The DBML and the endpoint spreadsheet were reconciled against the SRS. These decisions are settled; if you see the old version somewhere, it is stale:
+The DBML was reconciled against the SRS. These decisions are settled; if you see the old version somewhere, it is stale:
 
-- **No add-on purchases.** `POST /payments/shop-addon` was removed, along with the `EXTRA_SHOP` payment purpose, `extra_shop_quota`, and `extra_shop_price_thb` in the DBML. Quota changes only by upgrading a plan (SRS §66/§110). Don't add an endpoint that sells extra shops, products, or staff slots.
-- **2FA is opt-in for every role** (SRS §39) — never forced on Shop Owners or anyone else.
+- **No add-on purchases.** `POST /payments/shop-addon` was removed, along with the `EXTRA_SHOP` payment purpose, `extra_shop_quota`, and `extra_shop_price_thb` in the DBML. Quota changes only by upgrading a plan. Don't add an endpoint that sells extra shops, products, or staff slots.
+- **2FA is opt-in for every role** — never forced on Shop Owners or anyone else.
 - **No downgrade flow, and no free upgrade path.** `POST /subscriptions/upgrade` and `POST /subscriptions/renew` were **removed** — they changed the plan without taking payment. A purchase now starts at `POST /payments/subscription-intent { planCode }` (`PLUS|PRO` only) and takes effect only in `POST /payments/:id/confirm`, which retrieves the PaymentIntent from Stripe and requires `succeeded` before calling `SubscriptionsService.applyUpgrade()` / `applyRenewal()`. **There is no Stripe webhook**; an hourly job closes payments left open for 24 hours. Plus → Pro mid-term charges the price difference and keeps the expiry date; renewal opens 30 days before expiry and extends from the old expiry date.
-- **Admin can manage shops, not just users** — `GET /admin/shops`, `PATCH /admin/shops/:id/suspend|reactivate`, and `GET /admin/overview` were added to cover SRS §22/§76/§184/§185.
-- **A Dashboard module exists** (`feature/dashboard-resource`) covering SRS §176–§182, which the original endpoint list omitted entirely. Basic Dashboard is available on Free; the combined-shops view and Advanced Reports are Plus/Pro only.
+- **Admin can manage shops, not just users** — `GET /admin/shops`, `PATCH /admin/shops/:id/suspend|reactivate`, and `GET /admin/overview` were added to cover the SRS admin requirements.
+- **A Dashboard module exists** (`feature/dashboard-resource`), which the original endpoint list omitted entirely. Basic Dashboard is available on Free; the combined-shops view and Advanced Reports are Plus/Pro only.
 
 ## When unsure
 
-Cross-check the SRS (Google Doc "SRS - Aum Manage Stocks") before assuming a business rule — it is the single source of truth for requirements, ahead of this file, the DBML, or the endpoint spreadsheet. If they disagree, ask rather than guessing which one is current.
+Cross-check the SRS (Google Doc "SRS - Aum Manage Stocks") before assuming a business rule — it is the single source of truth for requirements, ahead of this file or the DBML. If they disagree, ask rather than guessing which one is current.
